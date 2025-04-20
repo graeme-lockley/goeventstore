@@ -31,9 +31,9 @@ jobs:
       - name: Run tests
         run: go test -v -coverprofile=coverage.out ./...
 
-      - name: Generate coverage report
-        uses: codecov/codecov-action@v3
-        with:
-          file: ./coverage.out
-          flags: unittests
-          fail_ci_if_error: false
+#      - name: Generate coverage report
+#        uses: codecov/codecov-action@v3
+#        with:
+#          file: ./coverage.out
+#          flags: unittests
+#          fail_ci_if_error: false
