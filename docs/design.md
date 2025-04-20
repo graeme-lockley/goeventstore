@@ -138,37 +138,38 @@ For the file system adapter, the configuration looks like:
 
 ```
 /
-├── cmd/                   # Entrypoints
-│   ├── api/               # Starts REST API server
-│   └── replay/            # Runs projection rebuilds
-│
-├── internal/
-│   ├── api/               # HTTP handlers
-│   ├── eventstore/        # CQRS core engine
-│   │   ├── commands/
-│   │   ├── queries/
-│   │   ├── topics/
-│   │   ├── projections/
-│   │   └── subscribers/
-│   ├── adapters/
-│   │   ├── memory/
-│   │   ├── fs/
-│   │   ├── blob/
-│   │   └── postgres/
-│   └── port/              # Interfaces (ports)
-│       ├── inbound/
-│       └── outbound/
+├── src/                   # Source code
+│   ├── cmd/               # Entrypoints
+│   │   ├── api/           # Starts REST API server
+│   │   └── replay/        # Runs projection rebuilds
+│   │
+│   └── internal/          # Internal packages
+│       ├── api/           # HTTP handlers
+│       ├── eventstore/    # CQRS core engine
+│       │   ├── commands/
+│       │   ├── queries/
+│       │   ├── topics/
+│       │   ├── projections/
+│       │   └── subscribers/
+│       ├── adapters/      # Storage adapters
+│       │   ├── memory/
+│       │   ├── fs/
+│       │   ├── blob/
+│       │   └── postgres/
+│       └── port/          # Interfaces (ports)
+│           ├── inbound/
+│           └── outbound/
 │
 ├── test/                  # Integration tests
 │
 ├── infra/                 # Infrastructure
 │   ├── workstation/       # Docker workstation setup
-│   └── docker-compose.yml # Docker Compose setup
+│   └── docker/            # Docker configuration
 │
 └── go.mod
 ```
 
-Note that only integration tests are placed in the `test` directory.  Unit tests are placed in the `internal` directory.
+Note that only integration tests are placed in the `test` directory. Unit tests are placed in the directory of the file that is under test.
 
 ---
 

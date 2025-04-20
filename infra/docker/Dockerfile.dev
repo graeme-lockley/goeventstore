@@ -2,20 +2,18 @@ FROM golang:1.24-alpine
 
 WORKDIR /app
 
-# Install CompileDaemon for hot reloading
-RUN go install github.com/githubnemo/CompileDaemon@latest
+# Install necessary tools
+RUN apk --no-cache add curl bash
 
-# Install curl for healthcheck
-RUN apk --no-cache add curl
+# Create bin directory
+RUN mkdir -p /app/bin
 
-# Copy go mod and sum files
-COPY go.mod go.sum ./
-
-# Download dependencies
-RUN go mod download
+# Copy entrypoint script
+COPY infra/docker/docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
 
 # Expose port
 EXPOSE 8080
 
-# Run CompileDaemon for hot reloading
-CMD CompileDaemon --build="go build -o ./bin/api ./cmd/api" --command="./bin/api" 
+# Use entrypoint script to build and run the app
+ENTRYPOINT ["/docker-entrypoint.sh"] 

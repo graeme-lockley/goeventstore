@@ -21,28 +21,28 @@ all: test build
 
 build:
 	mkdir -p $(BUILD_DIR)
-	$(GOBUILD) -o $(BUILD_DIR)/$(BINARY_NAME) $(LDFLAGS) ./cmd/api/...
+	$(GOBUILD) -o $(BUILD_DIR)/$(BINARY_NAME) $(LDFLAGS) ./src/cmd/api/...
 
 clean:
 	$(GOCLEAN)
 	rm -rf $(BUILD_DIR)
 
 test:
-	$(GOTEST) -v ./...
+	$(GOTEST) -v ./src/...
 
 test-cover:
-	$(GOTEST) -coverprofile=coverage.out ./...
+	$(GOTEST) -coverprofile=coverage.out ./src/...
 	$(GOCMD) tool cover -html=coverage.out
 
 lint:
-	golangci-lint run ./...
+	golangci-lint run ./src/...
 
 format:
-	$(GOCMD) fmt ./...
-	goimports -w .
+	$(GOCMD) fmt ./src/...
+	goimports -w ./src
 
 run:
-	$(GORUN) ./cmd/api/main.go
+	$(GORUN) ./src/cmd/api/main.go
 
 run-dev:
 	air -c .air.toml
@@ -67,7 +67,7 @@ tidy:
 
 deps-update:
 	$(GOMOD) tidy
-	$(GOGET) -u ./...
+	$(GOGET) -u ./src/...
 
 help:
 	@echo "Available targets:"
