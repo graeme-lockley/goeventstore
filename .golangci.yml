@@ -1,0 +1,102 @@
+linters-settings:
+  dupl:
+    threshold: 100
+  funlen:
+    lines: 100
+    statements: 50
+  gci:
+    local-prefixes: goeventsource
+  goconst:
+    min-len: 2
+    min-occurrences: 3
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - experimental
+      - opinionated
+      - performance
+      - style
+  gocyclo:
+    min-complexity: 15
+  goimports:
+    local-prefixes: goeventsource
+  gomnd:
+    settings:
+      mnd:
+        checks: argument,case,condition,return
+  govet:
+    check-shadowing: true
+  lll:
+    line-length: 140
+  misspell:
+    locale: US
+  nestif:
+    min-complexity: 4
+  nolintlint:
+    require-explanation: true
+    require-specific: true
+
+linters:
+  disable-all: true
+  enable:
+    - bodyclose
+    - dogsled
+    - dupl
+    - errcheck
+    - exportloopref
+    - funlen
+    - gochecknoinits
+    - goconst
+    - gocritic
+    - gocyclo
+    - gofmt
+    - goimports
+    - gomnd
+    - goprintffuncname
+    - gosec
+    - gosimple
+    - govet
+    - ineffassign
+    - lll
+    - misspell
+    - nakedret
+    - noctx
+    - nolintlint
+    - revive
+    - staticcheck
+    - stylecheck
+    - typecheck
+    - unconvert
+    - unparam
+    - unused
+    - whitespace
+
+run:
+  timeout: 5m
+  issues-exit-code: 1
+  tests: true
+  build-tags:
+    - integration
+  skip-dirs:
+    - vendor/
+    - test/
+  skip-files:
+    - ".*_test\\.go$"
+
+# output configuration options
+output:
+  format: colored-line-number
+  print-issued-lines: true
+  print-linter-name: true
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - dupl
+        - gomnd
+        - funlen
+
+  max-same-issues: 0
+  max-issues-per-linter: 0
+  fix: false 

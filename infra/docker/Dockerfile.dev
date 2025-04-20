@@ -1,0 +1,21 @@
+FROM golang:1.24-alpine
+
+WORKDIR /app
+
+# Install CompileDaemon for hot reloading
+RUN go install github.com/githubnemo/CompileDaemon@latest
+
+# Install curl for healthcheck
+RUN apk --no-cache add curl
+
+# Copy go mod and sum files
+COPY go.mod go.sum ./
+
+# Download dependencies
+RUN go mod download
+
+# Expose port
+EXPOSE 8080
+
+# Run CompileDaemon for hot reloading
+CMD CompileDaemon --build="go build -o ./bin/api ./cmd/api" --command="./bin/api" 

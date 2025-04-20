@@ -1,0 +1,36 @@
+Okay - so I am going to use Go to write the event store.  Please can you write a detailed requirements document for me to construct a simple event store in Go.  The event store needs to have the follow properties:
+
+- It must be made up of multiple modules:
+    - api - provides a REST API into the event store consisting of a data plane and a control plane.  The control plan is responsible for health check, creating topics and managing topics.  The data plan is for querying topics, querying events, publishing events against a topic as a command and registering a call back on a topic from a specific event ID so that, all events that are published against that topic, are forwarded to the call back.  Note that callback registrations are transient - they are not persistent and need to be restablished every time the event store is restarted.
+    - eventstore - the engine is the actual event store which services the different commands and queries from the api.  The event store makes use of persistent adaptors to store and retrieve data.  These persistent adaptors are configured at runtime as part of the topic configuration.  There are multiple kinds of adaptors - in memory, Azure Blob Storage and PostgreSQL.
+    - In Memory Adaptor - an in memory persistent storage for events
+    - Azure Blob Storage - a persistent storage for events in Azure Blob Storage
+    - PostgreSQL - a persistent storage for events in PostgreSQL
+- The event store must be able to support multiple topics.  Each topic will have a different configuration.  The configuration will include the following:
+    - The topic name
+    - The persistent adaptor to use
+    - The connection string for the persistent adaptor
+    - The schema for the topic
+    - The table name for the topic
+- The event store itself is built using CQRS.  It is made up of a command side and a query side.  The command side is responsible for publishing events to the event store.  The query side is responsible for querying events from the event store.  The command side and the query side are kept in sync by means of projections.  Projections are nothing but a special kind of event handler that is responsible for updating the query side of the event store.  Projections are executed in the background and are continuously kept in sync with the command side.
+
+- Technical Requirements:
+    - The event store must be written in Go.
+    - The event store must be able to support multiple topics.
+    - The event store must be able to support multiple persistent adaptors.
+    - The event store must be able to support multiple projections.
+    - The event store must be able to support multiple event handlers.
+    - The event store must be able to support multiple event subscribers.
+- The implementation must make use of the following technologies:
+    - Go
+    - PostgreSQL
+    - Azure Blob Storage
+    - Docker
+    - Docker Compose for local development
+- The implementation must make use of the following design patterns:
+    - CQRS
+    - Event Sourcing
+    - Domain Driven Design
+    - Dependency Injection
+    - Repository Pattern
+- The implementation must be fully tested with detailed unit tests and integration tests.
