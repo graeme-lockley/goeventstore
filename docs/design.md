@@ -99,6 +99,7 @@ For the file system adapter, the configuration looks like:
 ### Command Side
 - Publishes events to configured adapter
 - Broadcasts to projections and callbacks
+- The callbacks are called against transient subscribers.  Each subscribers register an interesting in one or more topics.  This registration is done via the `POST /topics/{topic}/subscribe` endpoint with the subscriber providing a callback function - POST.  When an event is published to a topic, the eventstore will broadcast the event to all transient subscribers that are interested in the topic.  This will use native Go channels to deliver the event to the subscriber.  The subscriber register is held in memory and is keyed by the subscriber.  This is managed in EventStore.
 
 ### Query Side
 - Powered by projections (event handlers)
