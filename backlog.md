@@ -7,11 +7,11 @@
    - Read-write mutex for thread safety
    - Maps for caching latest versions and topic configs
 
-- [ ] 1.2. Implement constructor function `NewFileSystemEventRepository`
+- [x] 1.2. Implement constructor function `NewFileSystemEventRepository`
    - Accept base directory path parameter
    - Initialize maps and internal data structures
 
-- [ ] 1.3. Create directory structure helper functions
+- [x] 1.3. Create directory structure helper functions
    - Create base directory function
    - Create configs subdirectory function
    - Create events subdirectory function
