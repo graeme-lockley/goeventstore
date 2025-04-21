@@ -1,164 +1,143 @@
-# GoEventSource API
+# GoEventSource
 
-A RESTful API for event sourcing built with Go, using the standard library's net/http package and the new ServeMux introduced in Go 1.22.
+An event sourcing library implemented in Go that provides both a standalone EventStore and a REST API for event sourcing operations.
 
 ## Overview
 
-The GoEventSource API provides a flexible and robust way to interact with an event-sourced system through HTTP endpoints. It exposes functionality for:
+GoEventSource is a flexible event sourcing implementation built with Go. It provides:
 
-- Managing topics (streams of events)
-- Appending events to topics
-- Retrieving events from topics
-- Checking system health
+- A standalone EventStore library that can be embedded in your Go applications
+- A RESTful API built with Go's standard library net/http package and Go 1.22's new ServeMux
+- Multiple storage backends (in-memory, file system, with extensibility for others)
+- Topic-based event organization with flexible configuration
+- Comprehensive health monitoring and lifecycle management
 
-## API Endpoints
+## Using GoEventSource as a Library
 
-### Base Endpoints
+GoEventSource can be easily embedded into your Go applications to add event sourcing capabilities.
 
-- `GET /`: A simple hello world endpoint
-- `GET /health`: Basic API health check
+### Installation
 
-### EventStore Endpoints
+```bash
+go get github.com/yourusername/goeventsource
+```
 
-#### Health
+### Basic Usage
 
-- `GET /api/eventstore/health`: Detailed health information about the EventStore
+```go
+package main
 
-#### Topic Management
+import (
+	"context"
+	"log"
+	"os"
+	"time"
+	
+	"goeventsource/src/internal/eventstore"
+	"goeventsource/src/internal/eventstore/models"
+)
 
-- `GET /api/topics`: List all topics
-- `POST /api/topics`: Create a new topic
-- `GET /api/topics/{topicName}`: Get details of a specific topic
-- `DELETE /api/topics/{topicName}`: Delete a topic
-
-#### Event Operations
-
-- `GET /api/topics/{topicName}/events`: Retrieve events from a topic
-  - Query parameters:
-    - `fromVersion`: Only return events with version >= this value
-    - `type`: Filter events by event type
-- `POST /api/topics/{topicName}/events`: Append events to a topic
-
-## Request/Response Examples
-
-### Creating a Topic
-
-**Request:**
-```http
-POST /api/topics
-Content-Type: application/json
-
-{
-  "name": "orders",
-  "adapter": "memory",
-  "connection": "",
-  "options": {
-    "retention": "100"
-  }
+func main() {
+	// Create a configuration for the EventStore
+	config := models.EventStoreConfig{
+		Logger: log.New(os.Stdout, "[EventStore] ", log.LstdFlags),
+		ConfigStream: models.EventStreamConfig{
+			Name:       "config",
+			Adapter:    "memory", // Use in-memory storage for configuration
+			Connection: "memory-config",
+			Options:    make(map[string]string),
+		},
+	}
+	
+	// Create the EventStore instance
+	store, err := eventstore.NewEventStore(config)
+	if err != nil {
+		log.Fatalf("Failed to create EventStore: %v", err)
+	}
+	
+	// Initialize the EventStore
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	
+	if err := store.Initialize(ctx); err != nil {
+		log.Fatalf("Failed to initialize EventStore: %v", err)
+	}
+	
+	// Create a topic
+	topicConfig := models.TopicConfig{
+		Name:       "user-events",
+		Adapter:    "memory",
+		Connection: "memory-user-events",
+		Options:    map[string]string{"retention": "1000"},
+	}
+	
+	if err := store.CreateTopic(ctx, topicConfig); err != nil {
+		log.Fatalf("Failed to create topic: %v", err)
+	}
+	
+	// Append events to the topic
+	events := []models.Event{
+		{
+			Type: "UserCreated",
+			Data: map[string]interface{}{
+				"userId": "123",
+				"email":  "user@example.com",
+			},
+			Metadata: map[string]interface{}{
+				"source": "user-service",
+			},
+		},
+	}
+	
+	if err := store.AppendEvents(ctx, "user-events", events); err != nil {
+		log.Fatalf("Failed to append events: %v", err)
+	}
+	
+	// Retrieve events from the topic
+	retrievedEvents, err := store.GetEvents(ctx, "user-events", 0)
+	if err != nil {
+		log.Fatalf("Failed to retrieve events: %v", err)
+	}
+	
+	log.Printf("Retrieved %d events", len(retrievedEvents))
+	
+	// Close the EventStore when done
+	if err := store.Close(); err != nil {
+		log.Printf("Error closing EventStore: %v", err)
+	}
 }
 ```
 
-**Response:**
-```json
-{
-  "status": "success",
-  "message": "Topic 'orders' created successfully",
-  "data": {
-    "name": "orders",
-    "adapter": "memory",
-    "connection": "",
-    "options": {
-      "retention": "100"
-    }
-  }
-}
-```
+### Advanced Features
 
-### Appending Events
+- **Multiple Storage Adapters**: Choose between memory, file system, or implement your own adapters
+- **Concurrent Operations**: Thread-safe design allows concurrent event reads and writes
+- **Flexible Configuration**: Configure each topic with different storage backends and options
+- **Health Monitoring**: Built-in health checks for monitoring and diagnostics
 
-**Request:**
-```http
-POST /api/topics/orders/events
-Content-Type: application/json
+## REST API
 
-[
-  {
-    "type": "OrderCreated",
-    "data": {
-      "orderId": "12345",
-      "customerId": "C789",
-      "items": [{"productId": "P123", "quantity": 2}]
-    },
-    "metadata": {
-      "source": "api",
-      "userId": "U456"
-    }
-  }
-]
-```
+GoEventSource also provides a RESTful API for interacting with the EventStore through HTTP endpoints.
 
-**Response:**
-```json
-{
-  "status": "success",
-  "message": "1 events appended to topic 'orders'",
-  "data": {
-    "eventCount": 1,
-    "topic": "orders"
-  }
-}
-```
+### API Documentation
 
-### Getting Events
+For comprehensive API documentation including endpoint details, request/response formats, and examples, please refer to the [API Documentation](API_DOCS.md).
 
-**Request:**
-```http
-GET /api/topics/orders/events?fromVersion=0&type=OrderCreated
-```
-
-**Response:**
-```json
-{
-  "status": "success",
-  "data": {
-    "events": [
-      {
-        "id": "evt_123abc",
-        "topic": "orders",
-        "type": "OrderCreated",
-        "data": {
-          "orderId": "12345",
-          "customerId": "C789",
-          "items": [{"productId": "P123", "quantity": 2}]
-        },
-        "metadata": {
-          "source": "api",
-          "userId": "U456"
-        },
-        "timestamp": 1647359061000,
-        "version": 1
-      }
-    ],
-    "count": 1,
-    "topic": "orders",
-    "fromVersion": 0
-  }
-}
-```
-
-## Running the API
+### Running the API Server
 
 1. Set the PORT environment variable (optional, defaults to 8080)
 2. Run the API: `go run src/cmd/api/main.go`
 
-## Development
+## Project Structure
 
-### Structure
-
-- `src/cmd/api`: Main application entry point
+- `src/cmd/api`: API server entry point
+- `src/internal/eventstore`: Core EventStore implementation
+  - `models`: Data models and configurations
+  - `adapters`: Storage adapter implementations
 - `src/internal/api`: API implementation (handlers, middleware)
-- `src/internal/eventstore`: Core event sourcing functionality
-- `src/internal/port`: Interface definitions
+- `src/internal/port`: Interface definitions and contracts
+
+## Development
 
 ### Testing
 
@@ -168,10 +147,22 @@ Run the tests:
 go test ./...
 ```
 
+### Adding New Storage Adapters
+
+GoEventSource is designed to be extensible. To add a new storage adapter:
+
+1. Implement the `EventRepository` interface
+2. Register your adapter in the repository factory
+3. Use it in your configuration with the appropriate adapter name
+
 ## Features
 
+- Event sourcing with strong consistency guarantees
+- Multiple storage backend support
+- Optimistic concurrency control
 - Robust health monitoring
-- Proper error handling with appropriate HTTP status codes
+- Topic-based event organization
+- Proper error handling with appropriate status codes
 - Middleware for logging, CORS, and panic recovery
 - Graceful shutdown handling
 - EventStore lifecycle management 

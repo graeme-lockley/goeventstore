@@ -84,10 +84,21 @@ func (h *EventStoreHandlers) ListTopicsHandler(w http.ResponseWriter, r *http.Re
 	json.NewEncoder(w).Encode(response)
 }
 
+// Extract a helper function to get the topic name from URL path
+func extractTopicFromPath(path string) string {
+	// Handle only versioned URLs like "/api/v1/topics/my-topic"
+	parts := strings.Split(path, "/")
+	if len(parts) >= 5 && parts[2] == "v1" && parts[3] == "topics" {
+		return parts[4]
+	}
+
+	return ""
+}
+
 // GetTopicHandler returns details of a specific topic
 func (h *EventStoreHandlers) GetTopicHandler(w http.ResponseWriter, r *http.Request) {
 	// Extract topic name from URL path
-	topicName := strings.TrimPrefix(r.URL.Path, "/api/topics/")
+	topicName := extractTopicFromPath(r.URL.Path)
 	if topicName == "" {
 		handleError(w, fmt.Errorf("topic name is required"), "Missing topic name")
 		return
@@ -153,6 +164,56 @@ func (h *EventStoreHandlers) CreateTopicHandler(w http.ResponseWriter, r *http.R
 	json.NewEncoder(w).Encode(response)
 }
 
+// UpdateTopicHandler updates an existing topic in the EventStore
+func (h *EventStoreHandlers) UpdateTopicHandler(w http.ResponseWriter, r *http.Request) {
+	// Only accept PUT requests
+	if r.Method != http.MethodPut {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Extract topic name from URL path
+	topicName := extractTopicFromPath(r.URL.Path)
+	if topicName == "" {
+		handleError(w, fmt.Errorf("topic name is required"), "Missing topic name")
+		return
+	}
+
+	var config outbound.TopicConfig
+	if err := json.NewDecoder(r.Body).Decode(&config); err != nil {
+		handleError(w, err, "Invalid request body")
+		return
+	}
+
+	// Ensure the topic name in the body matches the URL
+	if config.Name != topicName {
+		handleError(w, fmt.Errorf("topic name mismatch"), "Topic name in body does not match URL", http.StatusBadRequest)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	if err := h.store.UpdateTopic(ctx, config); err != nil {
+		if err == eventstore.ErrTopicNotFound {
+			handleError(w, err, fmt.Sprintf("Topic '%s' not found", config.Name), http.StatusNotFound)
+			return
+		}
+		handleError(w, err, "Failed to update topic")
+		return
+	}
+
+	response := ResponseWrapper{
+		Status:  "success",
+		Message: fmt.Sprintf("Topic '%s' updated successfully", config.Name),
+		Data:    config,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
+}
+
 // DeleteTopicHandler deletes a topic from the EventStore
 func (h *EventStoreHandlers) DeleteTopicHandler(w http.ResponseWriter, r *http.Request) {
 	// Only accept DELETE requests
@@ -162,7 +223,7 @@ func (h *EventStoreHandlers) DeleteTopicHandler(w http.ResponseWriter, r *http.R
 	}
 
 	// Extract topic name from URL path
-	topicName := strings.TrimPrefix(r.URL.Path, "/api/topics/")
+	topicName := extractTopicFromPath(r.URL.Path)
 	if topicName == "" {
 		handleError(w, fmt.Errorf("topic name is required"), "Missing topic name")
 		return
@@ -199,12 +260,11 @@ func (h *EventStoreHandlers) AppendEventsHandler(w http.ResponseWriter, r *http.
 	}
 
 	// Extract topic name from URL path
-	parts := strings.Split(r.URL.Path, "/")
-	if len(parts) < 4 {
-		handleError(w, fmt.Errorf("invalid URL path"), "Invalid URL path")
+	topicName := extractTopicFromPath(r.URL.Path)
+	if topicName == "" {
+		handleError(w, fmt.Errorf("topic name is required"), "Missing topic name")
 		return
 	}
-	topicName := parts[3]
 
 	var events []outbound.Event
 	if err := json.NewDecoder(r.Body).Decode(&events); err != nil {
@@ -246,12 +306,11 @@ func (h *EventStoreHandlers) AppendEventsHandler(w http.ResponseWriter, r *http.
 // GetEventsHandler retrieves events from a topic
 func (h *EventStoreHandlers) GetEventsHandler(w http.ResponseWriter, r *http.Request) {
 	// Extract topic name from URL path
-	parts := strings.Split(r.URL.Path, "/")
-	if len(parts) < 4 {
-		handleError(w, fmt.Errorf("invalid URL path"), "Invalid URL path")
+	topicName := extractTopicFromPath(r.URL.Path)
+	if topicName == "" {
+		handleError(w, fmt.Errorf("topic name is required"), "Missing topic name")
 		return
 	}
-	topicName := parts[3]
 
 	// Parse fromVersion query parameter
 	fromVersion := int64(0) // Default to 0
@@ -294,6 +353,41 @@ func (h *EventStoreHandlers) GetEventsHandler(w http.ResponseWriter, r *http.Req
 			"count":       len(events),
 			"topic":       topicName,
 			"fromVersion": fromVersion,
+		},
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
+}
+
+// GetLatestVersionHandler returns the latest event version for a topic
+func (h *EventStoreHandlers) GetLatestVersionHandler(w http.ResponseWriter, r *http.Request) {
+	// Extract topic name from URL path
+	topicName := extractTopicFromPath(r.URL.Path)
+	if topicName == "" {
+		handleError(w, fmt.Errorf("topic name is required"), "Missing topic name")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	version, err := h.store.GetLatestVersion(ctx, topicName)
+	if err != nil {
+		if err == eventstore.ErrTopicNotFound {
+			handleError(w, err, fmt.Sprintf("Topic '%s' not found", topicName), http.StatusNotFound)
+			return
+		}
+		handleError(w, err, "Failed to get latest version")
+		return
+	}
+
+	response := ResponseWrapper{
+		Status: "success",
+		Data: map[string]interface{}{
+			"topic":         topicName,
+			"latestVersion": version,
 		},
 	}
 

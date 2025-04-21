@@ -44,18 +44,22 @@ func main() {
 	mux.HandleFunc("GET /", handlers.HelloWorldHandler)
 	mux.HandleFunc("GET /health", handlers.HealthCheckHandler)
 
-	// Register EventStore routes
-	mux.HandleFunc("GET /api/eventstore/health", esHandlers.HealthCheckHandler)
+	// ---------- Versioned API Routes (v1) ----------
 
-	// Topic management endpoints
-	mux.HandleFunc("GET /api/topics", esHandlers.ListTopicsHandler)
-	mux.HandleFunc("POST /api/topics", esHandlers.CreateTopicHandler)
-	mux.HandleFunc("GET /api/topics/{topicName}", esHandlers.GetTopicHandler)
-	mux.HandleFunc("DELETE /api/topics/{topicName}", esHandlers.DeleteTopicHandler)
+	// Register v1 EventStore routes
+	mux.HandleFunc("GET /api/v1/eventstore/health", esHandlers.HealthCheckHandler)
 
-	// Event operations endpoints
-	mux.HandleFunc("GET /api/topics/{topicName}/events", esHandlers.GetEventsHandler)
-	mux.HandleFunc("POST /api/topics/{topicName}/events", esHandlers.AppendEventsHandler)
+	// Topic management endpoints - v1 paths
+	mux.HandleFunc("GET /api/v1/topics", esHandlers.ListTopicsHandler)
+	mux.HandleFunc("POST /api/v1/topics", esHandlers.CreateTopicHandler)
+	mux.HandleFunc("GET /api/v1/topics/{topicName}", esHandlers.GetTopicHandler)
+	mux.HandleFunc("PUT /api/v1/topics/{topicName}", esHandlers.UpdateTopicHandler)
+	mux.HandleFunc("DELETE /api/v1/topics/{topicName}", esHandlers.DeleteTopicHandler)
+
+	// Event operations endpoints - v1 paths
+	mux.HandleFunc("GET /api/v1/topics/{topicName}/events", esHandlers.GetEventsHandler)
+	mux.HandleFunc("POST /api/v1/topics/{topicName}/events", esHandlers.AppendEventsHandler)
+	mux.HandleFunc("GET /api/v1/topics/{topicName}/version", esHandlers.GetLatestVersionHandler)
 
 	// Apply middleware to the router
 	var handler http.Handler = mux

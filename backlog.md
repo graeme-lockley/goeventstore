@@ -149,41 +149,41 @@ The EventStore needs to be refactored to manage multiple repositories based on e
 - [x] Write unit tests for lifecycle methods
 
 ### 4.8 Integration Testing (Implement Last)
-- [ ] Create integration tests for multi-repository scenarios:
-  - [ ] Test topics with different repository adapters
-  - [ ] Test repository reuse for identical configurations
-  - [ ] Test error handling for adapter failures
-  - [ ] Test persistence across EventStore instances
-  - [ ] Test concurrent operations on multiple repositories
+- [x] Create integration tests for multi-repository scenarios:
+  - [x] Test topics with different repository adapters
+  - [x] Test repository reuse for identical configurations
+  - [x] Test error handling for adapter failures
+  - [x] Test persistence across EventStore instances
+  - [x] Test concurrent operations on multiple repositories
 
 ## 5. Topic Management Operations
-- [ ] Implement `CreateTopic` method
-  - [ ] Validate topic configuration
-  - [ ] Create topic in repository
-  - [ ] Record creation event in configuration topic
-  - [ ] Update write model
-- [ ] Implement `UpdateTopic` method
-  - [ ] Validate topic configuration
-  - [ ] Update topic in repository
-  - [ ] Record update event in configuration topic
-  - [ ] Update write model
-- [ ] Implement `DeleteTopic` method
-  - [ ] Validate topic name
-  - [ ] Delete topic in repository
-  - [ ] Record deletion event in configuration topic
-  - [ ] Update write model
-- [ ] Implement `GetTopic` method to retrieve a specific topic configuration
-- [ ] Implement `ListTopics` method to list all topic configurations
+- [x] Implement `CreateTopic` method
+  - [x] Validate topic configuration
+  - [x] Create topic in repository
+  - [x] Record creation event in configuration topic
+  - [x] Update write model
+- [x] Implement `UpdateTopic` method
+  - [x] Validate topic configuration
+  - [x] Update topic in repository
+  - [x] Record update event in configuration topic
+  - [x] Update write model
+- [x] Implement `DeleteTopic` method
+  - [x] Validate topic name
+  - [x] Delete topic in repository
+  - [x] Record deletion event in configuration topic
+  - [x] Update write model
+- [x] Implement `GetTopic` method to retrieve a specific topic configuration
+- [x] Implement `ListTopics` method to list all topic configurations
 
 ## 6. Event Operations
-- [ ] Implement `AppendEvents` method to add events to a topic
-- [ ] Implement `GetEvents` method to retrieve events from a topic
-- [ ] Implement `GetEventsByType` method to retrieve events of a specific type
-- [ ] Implement `GetLatestVersion` method to get the latest event version for a topic
+- [x] Implement `AppendEvents` method to add events to a topic
+- [x] Implement `GetEvents` method to retrieve events from a topic
+- [x] Implement `GetEventsByType` method to retrieve events of a specific type
+- [x] Implement `GetLatestVersion` method to get the latest event version for a topic
 
 ## 7. Lifecycle and Health Operations
-- [ ] Implement `Health` method to report health information
-- [ ] Implement `Close` method to clean up resources
+- [x] Implement `Health` method to report health information
+- [x] Implement `Close` method to clean up resources
 
 ## 8. Implement Repository Factory
 - [ ] Create `factory.go` file for repository creation
