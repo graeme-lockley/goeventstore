@@ -18,7 +18,7 @@
    - Add subscription creation timestamp
    - Include subscriber state (active, paused, closed)
 
-- [ ] 3. Implement the subscriber registry in `src/internal/eventstore/subscribers/registry.go`
+- [x] 3. Implement the subscriber registry in `src/internal/eventstore/subscribers/registry.go`
    - Create thread-safe registry using sync.RWMutex
    - Implement Add, Get, List, Update, and Remove methods
    - Add methods for querying subscribers by topic, state
