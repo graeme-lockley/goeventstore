@@ -1,91 +1,195 @@
-# Project Setup Backlog
+# File System Storage Adaptor Implementation Backlog
 
-## 1. Setup Development Environment
+## 1. Core Infrastructure
 
-- [x] Create necessary directories and files:
-  - [x] Create a main.go file in cmd/api directory for the API entrypoint
-  - [x] Create an internal/api directory for HTTP handlers
-  - [x] Create infra/docker directory for Docker configurations
+- [x] 1.1. Define the `FileSystemEventRepository` struct with required fields:
+   - Base path for storage
+   - Read-write mutex for thread safety
+   - Maps for caching latest versions and topic configs
 
-- [x] Setup basic Go application structure:
-  - [x] Define API routes and handlers
-  - [x] Implement health check endpoint
-  - [x] Configure logging
+- [ ] 1.2. Implement constructor function `NewFileSystemEventRepository`
+   - Accept base directory path parameter
+   - Initialize maps and internal data structures
 
-## 2. Implement Hello World API Endpoint
+- [ ] 1.3. Create directory structure helper functions
+   - Create base directory function
+   - Create configs subdirectory function
+   - Create events subdirectory function
+   - Create topic-specific subdirectories function
 
-- [x] Create HTTP server:
-  - [x] Setup a basic HTTP server using Go's standard library
-  - [x] Configure proper middleware for logging and error handling
+## 2. Initialization and Lifecycle
 
-- [x] Create Hello World endpoint:
-  - [x] Create a handler function for the root path
-  - [x] Return JSON response with "Hello World" message
-  - [x] Include appropriate headers and status codes
+- [ ] 2.1. Implement the `Initialize` method
+   - Create the base directory structure if it doesn't exist
+   - Load existing topic configurations from the configs directory
+   - Determine latest versions for each topic
+   - Handle initialization errors appropriately
 
-- [x] Add health check endpoint:
-  - [x] Create a /health endpoint that returns service status
-  - [x] Include basic system information
+- [ ] 2.2. Implement the `Close` method
+   - Add any necessary cleanup operations
 
-## 3. Setup Docker Environment
+- [ ] 2.3. Implement `determineLatestVersion` helper function
+   - Scan topic directory to find highest event version
 
-- [x] Create Dockerfile:
-  - [x] Use multi-stage build for smaller image size
-  - [x] Use Go 1.24 as the base image
-  - [x] Configure proper working directory and permissions
-  - [x] Set environment variables for production use
+## 3. Event Operations
 
-- [x] Create docker-compose.yml:
-  - [x] Define services (API and any dependencies)
-  - [x] Configure networking between services
-  - [ ] Set up volumes for persistent storage
-  - [x] Define environment variables
+- [ ] 3.1. Implement `AppendEvents` method
+   - Add thread-safe locking
+   - Verify topic exists
+   - Get latest version from cache
+   - Ensure topic directory exists
+   - Generate missing event fields (ID, timestamp)
+   - Increment and assign version numbers
+   - Marshal events to JSON format
+   - Create padded filename format for events
+   - Implement atomic file writes using temp files
+   - Update latest version cache
 
-- [x] Create development utilities:
-  - [x] Add docker-compose.dev.yml for development environment
-  - [x] Include hot-reloading using tools like air or CompileDaemon
-  - [x] Mount source code as volume for dynamic updates
+- [ ] 3.2. Implement `GetEvents` method
+   - Add read locks for thread safety
+   - Verify topic exists
+   - Read directory entries for the topic
+   - Filter events by version
+   - Read and unmarshal event files
+   - Sort events by version
+   - Return ordered event list
 
-## 4. Setup GitHub Actions for CI/CD
+- [ ] 3.3. Implement `GetEventsByType` method
+   - Leverage GetEvents functionality
+   - Filter results by event type
 
-- [x] Create GitHub Actions workflow file:
-  - [x] Create .github/workflows/ci.yml
-  - [x] Configure workflow to run on push and pull requests
+- [ ] 3.4. Implement `GetLatestVersion` method
+   - Use cached version for efficiency
+   - Handle errors for non-existent topics
 
-- [x] Configure test pipeline:
-  - [x] Set up Go environment with proper version
-  - [x] Install dependencies
-  - [x] Run linters (using golangci-lint)
-  - [x] Execute unit tests
-  - [x] Generate and upload test coverage reports
+## 4. Topic Management
 
-- [x] Add Docker build and push:
-  - [x] Add steps to build Docker image
-  - [x] Configure container registry authentication
-  - [x] Push image to registry on successful tests
-  - [x] Tag images with git commit SHA and branch name
+- [ ] 4.1. Implement `CreateTopic` method
+   - Verify topic doesn't already exist
+   - Create topic directory
+   - Marshal and save topic configuration
+   - Update in-memory state
 
-## 5. Create Documentation
+- [ ] 4.2. Implement `DeleteTopic` method
+   - Verify topic exists
+   - Remove topic directory and files
+   - Remove topic configuration file
+   - Update in-memory state
 
-- [x] Update README.md:
-  - [x] Include project description
-  - [x] Document how to run locally
-  - [x] Document how to run with Docker
-  - [x] Add API documentation
-  - [x] Include information about tests and CI/CD
+- [ ] 4.3. Implement `ListTopics` method
+   - Return list of all topic configurations
 
-- [x] Create API documentation:
-  - [x] Document endpoints
-  - [x] Include example requests and responses
-  - [x] Add information about error handling
+- [ ] 4.4. Implement `TopicExists` method
+   - Check in-memory map for efficiency
 
-## 6. Additional Development Tools
+- [ ] 4.5. Implement `UpdateTopicConfig` method
+   - Verify topic exists
+   - Marshal updated configuration
+   - Implement atomic file update
+   - Update in-memory state
 
-- [x] Create Makefile:
-  - [x] Add commands for building, testing, and linting
-  - [x] Include Docker-related commands
-  - [x] Add utility commands for development
+- [ ] 4.6. Implement `GetTopicConfig` method
+   - Return cached config for efficiency
 
-- [x] Configure linting and formatting:
-  - [x] Add .golangci.yml for linter configuration
-  - [x] Configure editor settings for consistent formatting 
+## 5. Health and Monitoring
+
+- [ ] 5.1. Implement `Health` method
+   - Report status of the repository
+   - Include topic count and event counts
+   - Add disk space information
+   - Report any encountered errors
+
+## 6. File System Utilities
+
+- [ ] 6.1. Implement file locking mechanism for concurrent access
+
+- [ ] 6.2. Create atomic file write utilities
+
+- [ ] 6.3. Implement proper error handling for file operations
+
+- [ ] 6.4. Add directory existence checking functions
+
+- [ ] 6.5. Create event file naming convention utilities
+
+## 7. Unit Tests
+
+- [ ] 7.1. Test constructor and initialization
+   - Test with existing and non-existing directories
+   - Test loading existing configurations
+
+- [ ] 7.2. Test event operations
+   - Test appending events
+   - Test retrieving events by version
+   - Test retrieving events by type
+   - Test version management
+   - Test event ID and timestamp generation
+
+- [ ] 7.3. Test topic management
+   - Test topic creation
+   - Test topic deletion
+   - Test listing topics
+   - Test topic existence checks
+   - Test updating topic configuration
+   - Test retrieving topic configuration
+
+- [ ] 7.4. Test error conditions
+   - Test operations on non-existent topics
+   - Test concurrent access scenarios
+   - Test file system error handling
+   - Test invalid JSON handling
+
+- [ ] 7.5. Test health reporting
+   - Verify correct status reporting
+   - Verify event counts
+   - Test disk space reporting
+
+## 8. Integration Tests
+
+- [ ] 8.1. Test persistence across application restarts
+   - Create topics and add events
+   - Close and reopen repository
+   - Verify all data is preserved
+
+- [ ] 8.2. Test concurrent operations
+   - Test multiple goroutines writing to the same topic
+   - Test concurrent reads and writes
+   - Test concurrent topic operations
+
+- [ ] 8.3. Test performance
+   - Benchmark appending large numbers of events
+   - Benchmark retrieving events with various filters
+   - Test with different directory sizes and depths
+
+- [ ] 8.4. Test disk space management
+   - Test behavior when disk space is low
+   - Test with different file permissions
+
+## 9. Edge Case Handling
+
+- [ ] 9.1. Implement safety checks for maximum file counts
+
+- [ ] 9.2. Add error handling for filesystem-specific limits
+
+- [ ] 9.3. Add recovery mechanisms for partially written files
+
+- [ ] 9.4. Handle long file paths and special characters in event data
+
+## 10. Documentation
+
+- [ ] 10.1. Add inline documentation for all public functions
+
+- [ ] 10.2. Create usage examples
+
+- [ ] 10.3. Document performance characteristics
+
+- [ ] 10.4. Add troubleshooting guides for common issues
+
+## 11. Optimization (Optional)
+
+- [ ] 11.1. Implement event partitioning for large topics
+
+- [ ] 11.2. Add optional compression support
+
+- [ ] 11.3. Create index files for faster retrieval
+
+- [ ] 11.4. Implement caching strategies for frequent queries 
