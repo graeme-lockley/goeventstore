@@ -16,16 +16,18 @@ import (
 
 // MockEventStore is a mock implementation of EventStoreInterface for testing
 type MockEventStore struct {
-	topicConfigs      map[string]outbound.TopicConfig
-	events            map[string][]outbound.Event
-	healthData        map[string]interface{}
-	healthError       error
-	createTopicError  error
-	deleteTopicError  error
-	getTopicError     error
-	listTopicsError   error
-	appendEventsError error
-	getEventsError    error
+	topicConfigs       map[string]outbound.TopicConfig
+	events             map[string][]outbound.Event
+	healthData         map[string]interface{}
+	healthError        error
+	createTopicError   error
+	deleteTopicError   error
+	getTopicError      error
+	listTopicsError    error
+	appendEventsError  error
+	getEventsError     error
+	latestVersionError error
+	latestVersion      int64
 }
 
 func NewMockEventStore() *MockEventStore {
@@ -143,17 +145,15 @@ func (m *MockEventStore) GetEventsByType(ctx context.Context, topicName string, 
 }
 
 func (m *MockEventStore) GetLatestVersion(ctx context.Context, topicName string) (int64, error) {
+	if m.latestVersionError != nil {
+		return 0, m.latestVersionError
+	}
+
 	if _, exists := m.topicConfigs[topicName]; !exists {
 		return 0, eventstore.ErrTopicNotFound
 	}
 
-	var latestVersion int64 = 0
-	for _, event := range m.events[topicName] {
-		if event.Version > latestVersion {
-			latestVersion = event.Version
-		}
-	}
-	return latestVersion, nil
+	return m.latestVersion, nil
 }
 
 func (m *MockEventStore) Health(ctx context.Context) (map[string]interface{}, error) {
@@ -362,7 +362,7 @@ func TestGetTopicHandler(t *testing.T) {
 
 			handlers := NewEventStoreHandlers(mockStore)
 
-			req, err := http.NewRequest("GET", "/api/topics/"+tc.topicName, nil)
+			req, err := http.NewRequest("GET", "/api/v1/topics/"+tc.topicName, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -370,7 +370,7 @@ func TestGetTopicHandler(t *testing.T) {
 			rr := httptest.NewRecorder()
 			// Create a handler function that extracts the topic name
 			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				r.URL.Path = "/api/topics/" + tc.topicName
+				r.URL.Path = "/api/v1/topics/" + tc.topicName
 				handlers.GetTopicHandler(w, r)
 			})
 			handler.ServeHTTP(rr, req)
@@ -425,7 +425,7 @@ func TestAppendEventsHandler(t *testing.T) {
 			handlers := NewEventStoreHandlers(mockStore)
 
 			eventsJson, _ := json.Marshal(events)
-			req, err := http.NewRequest("POST", "/api/topics/"+topicName+"/events", bytes.NewBuffer(eventsJson))
+			req, err := http.NewRequest("POST", "/api/v1/topics/"+topicName+"/events", bytes.NewBuffer(eventsJson))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -434,7 +434,7 @@ func TestAppendEventsHandler(t *testing.T) {
 			rr := httptest.NewRecorder()
 			// Create a handler function that extracts the topic name
 			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				r.URL.Path = "/api/topics/" + topicName + "/events"
+				r.URL.Path = "/api/v1/topics/" + topicName + "/events"
 				handlers.AppendEventsHandler(w, r)
 			})
 			handler.ServeHTTP(rr, req)
@@ -527,7 +527,7 @@ func TestGetEventsHandler(t *testing.T) {
 
 			handlers := NewEventStoreHandlers(mockStore)
 
-			url := "/api/topics/" + topicName + "/events"
+			url := "/api/v1/topics/" + topicName + "/events"
 			if tc.fromVersion > 0 {
 				url += "?fromVersion=" + fmt.Sprintf("%d", tc.fromVersion)
 			}
@@ -543,16 +543,15 @@ func TestGetEventsHandler(t *testing.T) {
 			rr := httptest.NewRecorder()
 			// Create a handler function that extracts the topic name
 			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				r.URL.Path = "/api/topics/" + topicName + "/events"
+				r.URL.Path = "/api/v1/topics/" + topicName + "/events"
 				if tc.fromVersion > 0 {
-					q := r.URL.Query()
-					q.Add("fromVersion", fmt.Sprintf("%d", tc.fromVersion))
-					r.URL.RawQuery = q.Encode()
+					r.URL.RawQuery = "fromVersion=" + fmt.Sprintf("%d", tc.fromVersion)
 				}
 				if tc.eventType != "" {
-					q := r.URL.Query()
-					q.Add("type", tc.eventType)
-					r.URL.RawQuery = q.Encode()
+					if r.URL.RawQuery != "" {
+						r.URL.RawQuery += "&"
+					}
+					r.URL.RawQuery += "type=" + tc.eventType
 				}
 				handlers.GetEventsHandler(w, r)
 			})
@@ -562,22 +561,121 @@ func TestGetEventsHandler(t *testing.T) {
 				t.Errorf("Handler returned wrong status code: got %v want %v", status, tc.expectedStatus)
 			}
 
-			if tc.topicExists {
+			if tc.topicExists && tc.expectedStatus == http.StatusOK {
 				var response ResponseWrapper
-				if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
-					t.Errorf("Failed to unmarshal response: %v", err)
+				err := json.Unmarshal(rr.Body.Bytes(), &response)
+				if err != nil {
+					t.Fatalf("Could not unmarshal response: %v", err)
 				}
 
 				data, ok := response.Data.(map[string]interface{})
 				if !ok {
-					t.Errorf("Response data has unexpected format")
-					return
+					t.Fatalf("Expected map in data field, got %T", response.Data)
 				}
 
-				// For simplicity, just check the topic name and count
-				topicFromResponse, ok := data["topic"].(string)
-				if !ok || topicFromResponse != topicName {
-					t.Errorf("Expected topic %s, got %v", topicName, topicFromResponse)
+				topic, ok := data["topic"].(string)
+				if !ok {
+					t.Fatalf("Expected string in topic field, got %T", data["topic"])
+				}
+
+				if topic != topicName {
+					t.Errorf("Expected topic %s, got %s", topicName, topic)
+				}
+
+				events, ok := data["events"].([]interface{})
+				if !ok {
+					t.Fatalf("Expected array in events field, got %T", data["events"])
+				}
+
+				if len(events) != tc.expectedCount {
+					t.Errorf("Expected %d events, got %d", tc.expectedCount, len(events))
+				}
+			}
+		})
+	}
+}
+
+func TestGetLatestVersionHandler(t *testing.T) {
+	topicName := "testtopic"
+	expectedVersion := int64(5)
+
+	tests := []struct {
+		name           string
+		topicExists    bool
+		expectedStatus int
+	}{
+		{
+			name:           "Topic exists",
+			topicExists:    true,
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name:           "Topic does not exist",
+			topicExists:    false,
+			expectedStatus: http.StatusNotFound,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mockStore := NewMockEventStore()
+			if tc.topicExists {
+				mockStore.topicConfigs[topicName] = outbound.TopicConfig{
+					Name:    topicName,
+					Adapter: "memory",
+				}
+			} else {
+				mockStore.latestVersionError = eventstore.ErrTopicNotFound
+			}
+			mockStore.latestVersion = expectedVersion
+
+			handlers := NewEventStoreHandlers(mockStore)
+
+			req, err := http.NewRequest("GET", "/api/v1/topics/"+topicName+"/version", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			rr := httptest.NewRecorder()
+			// Create a handler function that extracts the topic name
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				r.URL.Path = "/api/v1/topics/" + topicName + "/version"
+				handlers.GetLatestVersionHandler(w, r)
+			})
+			handler.ServeHTTP(rr, req)
+
+			if status := rr.Code; status != tc.expectedStatus {
+				t.Errorf("Handler returned wrong status code: got %v want %v", status, tc.expectedStatus)
+			}
+
+			if tc.topicExists {
+				var response ResponseWrapper
+				err := json.Unmarshal(rr.Body.Bytes(), &response)
+				if err != nil {
+					t.Fatalf("Could not unmarshal response: %v", err)
+				}
+
+				data, ok := response.Data.(map[string]interface{})
+				if !ok {
+					t.Fatalf("Expected map in data field, got %T", response.Data)
+				}
+
+				topic, ok := data["topic"].(string)
+				if !ok {
+					t.Fatalf("Expected string in topic field, got %T", data["topic"])
+				}
+
+				if topic != topicName {
+					t.Errorf("Expected topic %s, got %s", topicName, topic)
+				}
+
+				version, ok := data["latestVersion"].(float64)
+				if !ok {
+					t.Fatalf("Expected float64 in latestVersion field, got %T", data["latestVersion"])
+				}
+
+				if int64(version) != expectedVersion {
+					t.Errorf("Expected version %d, got %d", expectedVersion, int64(version))
 				}
 			}
 		})
