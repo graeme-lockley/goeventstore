@@ -9,7 +9,7 @@
    - Include methods for lifecycle management (pause, resume, close)
    - Define error handling and timeout behavior contracts
 
-- [ ] 2. Create the subscriber model in `src/internal/eventstore/models/subscriber.go`
+- [x] 2. Create the subscriber model in `src/internal/eventstore/models/subscriber.go`
    - Define SubscriberConfig struct with ID, topic interests, and filtering criteria
    - Include timeout configuration with initial timeout duration
    - Add standoff configuration with initial, max, and multiplier values
