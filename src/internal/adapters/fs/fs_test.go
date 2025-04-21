@@ -256,7 +256,7 @@ func TestClose(t *testing.T) {
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
-	// Create a test topic
+	// Create a test topic using the CreateTopic method
 	topicName := "test-topic"
 	topicConfig := outbound.TopicConfig{
 		Name:       topicName,
@@ -265,50 +265,26 @@ func TestClose(t *testing.T) {
 		Options:    map[string]string{"option1": "value1"},
 	}
 
-	// Save the topic configuration
-	configDir := repo.getConfigDir()
-	configPath := filepath.Join(configDir, topicName+".json")
-	configData, err := json.Marshal(topicConfig)
+	// Create the topic using the proper method
+	err = repo.CreateTopic(ctx, topicConfig)
 	if err != nil {
-		t.Fatalf("Failed to marshal topic config: %v", err)
+		t.Fatalf("Failed to create topic: %v", err)
 	}
 
-	err = os.WriteFile(configPath, configData, 0644)
-	if err != nil {
-		t.Fatalf("Failed to write topic config: %v", err)
-	}
-
-	// Create topic directory and add an event file
-	topicDir := repo.getTopicDir(topicName)
-	if err := os.MkdirAll(topicDir, 0755); err != nil {
-		t.Fatalf("Failed to create topic directory: %v", err)
-	}
-
-	// Create an event file with version 1
+	// Create and append a test event to the topic
 	testEvent := outbound.Event{
 		ID:        "test-id",
-		Topic:     topicName,
 		Type:      "TestEvent",
-		Version:   1,
-		Timestamp: time.Now().UnixNano(),
 		Data:      map[string]interface{}{"test": "data"},
+		Timestamp: time.Now().UnixNano(),
 	}
 
-	eventData, err := json.Marshal(testEvent)
+	err = repo.AppendEvents(ctx, topicName, []outbound.Event{testEvent})
 	if err != nil {
-		t.Fatalf("Failed to marshal event: %v", err)
+		t.Fatalf("Failed to append event: %v", err)
 	}
 
-	eventPath := filepath.Join(topicDir, "00000000000000000001.json")
-	if err := os.WriteFile(eventPath, eventData, 0644); err != nil {
-		t.Fatalf("Failed to write event file: %v", err)
-	}
-
-	// Load the topic
-	repo.topicConfigs[topicName] = topicConfig
-	repo.latestVersion[topicName] = 1
-
-	// Verify maps have data
+	// Verify maps have data before closing
 	if len(repo.topicConfigs) == 0 {
 		t.Error("Expected topicConfigs to have data before close")
 	}
@@ -333,6 +309,7 @@ func TestClose(t *testing.T) {
 	}
 
 	// Verify that the config file still exists (Close shouldn't delete data)
+	configPath := filepath.Join(repo.getConfigDir(), topicName+".json")
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		t.Error("Config file should still exist after close")
 	}
@@ -982,5 +959,578 @@ func TestGetLatestVersion(t *testing.T) {
 	}
 	if finalVersion != 9 {
 		t.Errorf("Expected final version to be 9, got %d", finalVersion)
+	}
+}
+
+func TestCreateTopic(t *testing.T) {
+	// Create temporary directory for testing
+	tempDir := createTempDir(t)
+	defer os.RemoveAll(tempDir)
+
+	// Create repository
+	repo := NewFileSystemEventRepository(tempDir)
+	ctx := context.Background()
+
+	// Initialize the repository
+	err := repo.Initialize(ctx)
+	if err != nil {
+		t.Fatalf("Failed to initialize repository: %v", err)
+	}
+
+	// Create a test topic
+	topic := "test-topic"
+	topicConfig := outbound.TopicConfig{
+		Name:       topic,
+		Adapter:    "fs",
+		Connection: tempDir,
+		Options:    map[string]string{"option1": "value1"},
+	}
+
+	// Create the topic
+	err = repo.CreateTopic(ctx, topicConfig)
+	if err != nil {
+		t.Fatalf("Failed to create topic: %v", err)
+	}
+
+	// Verify topic is stored in memory
+	if _, exists := repo.topicConfigs[topic]; !exists {
+		t.Error("Topic configuration not stored in memory after creation")
+	}
+
+	// Verify latest version is initialized to 0
+	if version, exists := repo.latestVersion[topic]; !exists || version != 0 {
+		t.Errorf("Expected latest version to be initialized to 0, got %d", version)
+	}
+
+	// Verify topic configuration file was created
+	configPath := filepath.Join(repo.getConfigDir(), topic+".json")
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		t.Error("Topic configuration file does not exist after creating topic")
+	}
+
+	// Read and verify the configuration file content
+	configData, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("Failed to read topic configuration file: %v", err)
+	}
+
+	var savedConfig outbound.TopicConfig
+	err = json.Unmarshal(configData, &savedConfig)
+	if err != nil {
+		t.Fatalf("Failed to unmarshal saved topic config: %v", err)
+	}
+
+	if savedConfig.Name != topic {
+		t.Errorf("Saved topic name mismatch: expected %s, got %s", topic, savedConfig.Name)
+	}
+	if savedConfig.Adapter != "fs" {
+		t.Errorf("Saved adapter mismatch: expected fs, got %s", savedConfig.Adapter)
+	}
+	if val, exists := savedConfig.Options["option1"]; !exists || val != "value1" {
+		t.Errorf("Saved options mismatch: expected %v, got %v", topicConfig.Options, savedConfig.Options)
+	}
+
+	// Verify topic directory was created
+	topicDir := repo.getTopicDir(topic)
+	if _, err := os.Stat(topicDir); os.IsNotExist(err) {
+		t.Error("Topic directory does not exist after creating topic")
+	}
+
+	// Test creating a topic that already exists (should fail)
+	err = repo.CreateTopic(ctx, topicConfig)
+	if err == nil {
+		t.Error("Expected error when creating topic that already exists, got nil")
+	}
+
+	// Verify the error is a TopicError with ErrTopicAlreadyExists
+	if !IsTopicAlreadyExists(err) {
+		t.Errorf("Expected TopicError with ErrTopicAlreadyExists, got %T: %v", err, err)
+	}
+}
+
+func TestDeleteTopic(t *testing.T) {
+	// Create temporary directory for test
+	tempDir := createTempDir(t)
+	defer os.RemoveAll(tempDir)
+
+	// Create repository
+	repo := NewFileSystemEventRepository(tempDir)
+	err := repo.Initialize(context.Background())
+	if err != nil {
+		t.Fatalf("Failed to initialize repository: %v", err)
+	}
+
+	// Create a test topic
+	topic := "test-topic"
+	config := outbound.TopicConfig{
+		Name:    topic,
+		Adapter: "fs",
+	}
+	err = repo.CreateTopic(context.Background(), config)
+	if err != nil {
+		t.Fatalf("Failed to create topic: %v", err)
+	}
+
+	// Add an event to the topic to ensure files are created
+	events := []outbound.Event{
+		{
+			Type: "TestEvent",
+			Data: map[string]interface{}{
+				"key": "value",
+			},
+		},
+	}
+	err = repo.AppendEvents(context.Background(), topic, events)
+	if err != nil {
+		t.Fatalf("Failed to append events: %v", err)
+	}
+
+	// Verify topic directory and config file exist before deletion
+	topicDir := filepath.Join(tempDir, "events", topic)
+	configPath := filepath.Join(tempDir, "configs", topic+".json")
+
+	if _, err := os.Stat(topicDir); os.IsNotExist(err) {
+		t.Fatalf("Topic directory should exist before deletion: %v", err)
+	}
+
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		t.Fatalf("Config file should exist before deletion: %v", err)
+	}
+
+	// Delete the topic
+	err = repo.DeleteTopic(context.Background(), topic)
+	if err != nil {
+		t.Fatalf("Failed to delete topic: %v", err)
+	}
+
+	// Verify topic is removed from in-memory maps
+	repo.mu.RLock()
+	_, exists := repo.latestVersion[topic]
+	if exists {
+		t.Errorf("Expected topic to be removed from latestVersion map")
+	}
+
+	_, exists = repo.topicConfigs[topic]
+	if exists {
+		t.Errorf("Expected topic to be removed from topicConfigs map")
+	}
+	repo.mu.RUnlock()
+
+	// Verify topic directory and config file are deleted
+	if _, err := os.Stat(topicDir); !os.IsNotExist(err) {
+		t.Errorf("Topic directory should not exist after deletion")
+	}
+
+	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+		t.Errorf("Config file should not exist after deletion")
+	}
+
+	// Test deleting a non-existent topic
+	err = repo.DeleteTopic(context.Background(), "non-existent-topic")
+	if err == nil {
+		t.Errorf("Deleting a non-existent topic should return an error")
+	} else if _, ok := err.(*TopicError); !ok {
+		t.Errorf("Error should be a TopicError, got: %T", err)
+	}
+}
+
+func TestListTopics(t *testing.T) {
+	// Create temporary directory for test
+	tempDir := createTempDir(t)
+	defer os.RemoveAll(tempDir)
+
+	// Create repository
+	repo := NewFileSystemEventRepository(tempDir)
+	err := repo.Initialize(context.Background())
+	if err != nil {
+		t.Fatalf("Failed to initialize repository: %v", err)
+	}
+
+	// Initially, no topics should exist
+	topics, err := repo.ListTopics(context.Background())
+	if err != nil {
+		t.Fatalf("Failed to list topics: %v", err)
+	}
+	if len(topics) != 0 {
+		t.Errorf("Initially no topics should exist, got %d", len(topics))
+	}
+
+	// Create multiple test topics
+	testTopics := []struct {
+		name    string
+		adapter string
+		options map[string]string
+	}{
+		{
+			name:    "topic1",
+			adapter: "fs",
+			options: map[string]string{"option1": "value1"},
+		},
+		{
+			name:    "topic2",
+			adapter: "fs",
+			options: map[string]string{"option2": "value2"},
+		},
+		{
+			name:    "topic3",
+			adapter: "fs",
+			options: map[string]string{"option3": "value3"},
+		},
+	}
+
+	// Create each topic
+	for _, tc := range testTopics {
+		config := outbound.TopicConfig{
+			Name:    tc.name,
+			Adapter: tc.adapter,
+			Options: tc.options,
+		}
+		err := repo.CreateTopic(context.Background(), config)
+		if err != nil {
+			t.Fatalf("Failed to create topic %s: %v", tc.name, err)
+		}
+	}
+
+	// List topics and verify
+	topics, err = repo.ListTopics(context.Background())
+	if err != nil {
+		t.Fatalf("Failed to list topics: %v", err)
+	}
+	if len(topics) != len(testTopics) {
+		t.Errorf("Should return all created topics, expected %d, got %d", len(testTopics), len(topics))
+	}
+
+	// Verify each topic is in the list with correct configuration
+	topicMap := make(map[string]outbound.TopicConfig)
+	for _, topic := range topics {
+		topicMap[topic.Name] = topic
+	}
+
+	for _, expectedTopic := range testTopics {
+		topic, exists := topicMap[expectedTopic.name]
+		if !exists {
+			t.Errorf("Topic %s should exist in the list", expectedTopic.name)
+			continue
+		}
+		if topic.Adapter != expectedTopic.adapter {
+			t.Errorf("Expected adapter %s for topic %s, got %s", expectedTopic.adapter, expectedTopic.name, topic.Adapter)
+		}
+		// Check if all options match
+		if len(topic.Options) != len(expectedTopic.options) {
+			t.Errorf("Options count mismatch for topic %s: expected %d, got %d",
+				expectedTopic.name, len(expectedTopic.options), len(topic.Options))
+		}
+		for k, v := range expectedTopic.options {
+			if topic.Options[k] != v {
+				t.Errorf("Option mismatch for topic %s: expected %s=%s, got %s",
+					expectedTopic.name, k, v, topic.Options[k])
+			}
+		}
+	}
+
+	// Delete one topic
+	err = repo.DeleteTopic(context.Background(), testTopics[0].name)
+	if err != nil {
+		t.Fatalf("Failed to delete topic %s: %v", testTopics[0].name, err)
+	}
+
+	// Verify topic list is updated
+	topics, err = repo.ListTopics(context.Background())
+	if err != nil {
+		t.Fatalf("Failed to list topics after deletion: %v", err)
+	}
+	if len(topics) != len(testTopics)-1 {
+		t.Errorf("Should return one less topic after deletion, expected %d, got %d",
+			len(testTopics)-1, len(topics))
+	}
+
+	// Verify the deleted topic is not in the list
+	for _, topic := range topics {
+		if topic.Name == testTopics[0].name {
+			t.Errorf("Deleted topic %s should not be in the list", testTopics[0].name)
+		}
+	}
+}
+
+func TestTopicExists(t *testing.T) {
+	// Create temporary directory for test
+	tempDir := createTempDir(t)
+	defer os.RemoveAll(tempDir)
+
+	// Create repository
+	repo := NewFileSystemEventRepository(tempDir)
+	err := repo.Initialize(context.Background())
+	if err != nil {
+		t.Fatalf("Failed to initialize repository: %v", err)
+	}
+
+	// Initially, no topics should exist
+	exists, err := repo.TopicExists(context.Background(), "test-topic")
+	if err != nil {
+		t.Fatalf("Failed to check if topic exists: %v", err)
+	}
+	if exists {
+		t.Errorf("Topic should not exist initially")
+	}
+
+	// Create a test topic
+	topic := "test-topic"
+	config := outbound.TopicConfig{
+		Name:    topic,
+		Adapter: "fs",
+		Options: map[string]string{"option1": "value1"},
+	}
+	err = repo.CreateTopic(context.Background(), config)
+	if err != nil {
+		t.Fatalf("Failed to create topic: %v", err)
+	}
+
+	// Check if topic exists after creation
+	exists, err = repo.TopicExists(context.Background(), topic)
+	if err != nil {
+		t.Fatalf("Failed to check if topic exists: %v", err)
+	}
+	if !exists {
+		t.Errorf("Topic should exist after creation")
+	}
+
+	// Check for a non-existent topic
+	exists, err = repo.TopicExists(context.Background(), "non-existent-topic")
+	if err != nil {
+		t.Fatalf("Failed to check if topic exists: %v", err)
+	}
+	if exists {
+		t.Errorf("Non-existent topic should not exist")
+	}
+
+	// Delete the topic
+	err = repo.DeleteTopic(context.Background(), topic)
+	if err != nil {
+		t.Fatalf("Failed to delete topic: %v", err)
+	}
+
+	// Check if topic exists after deletion
+	exists, err = repo.TopicExists(context.Background(), topic)
+	if err != nil {
+		t.Fatalf("Failed to check if topic exists: %v", err)
+	}
+	if exists {
+		t.Errorf("Topic should not exist after deletion")
+	}
+}
+
+func TestUpdateTopicConfig(t *testing.T) {
+	// Create a temporary directory
+	tempDir := createTempDir(t)
+
+	// Initialize the repository
+	repo := NewFileSystemEventRepository(tempDir)
+	err := repo.Initialize(context.Background())
+	if err != nil {
+		t.Fatalf("Failed to initialize repository: %v", err)
+	}
+
+	// Create initial topic config
+	initialConfig := outbound.TopicConfig{
+		Name:       "test-topic",
+		Adapter:    "fs",
+		Connection: tempDir,
+		Options: map[string]string{
+			"option1": "value1",
+			"option2": "value2",
+		},
+	}
+
+	// Create a topic
+	err = repo.CreateTopic(context.Background(), initialConfig)
+	if err != nil {
+		t.Fatalf("Failed to create topic: %v", err)
+	}
+
+	// Get the topic config
+	retrievedConfig, err := repo.GetTopicConfig(context.Background(), "test-topic")
+	if err != nil {
+		t.Fatalf("Failed to get topic config: %v", err)
+	}
+
+	// Verify initial config
+	if retrievedConfig.Name != initialConfig.Name {
+		t.Errorf("Expected topic name to be %s, got %s", initialConfig.Name, retrievedConfig.Name)
+	}
+	if retrievedConfig.Adapter != initialConfig.Adapter {
+		t.Errorf("Expected adapter to be %s, got %s", initialConfig.Adapter, retrievedConfig.Adapter)
+	}
+	if retrievedConfig.Connection != initialConfig.Connection {
+		t.Errorf("Expected connection to be %s, got %s", initialConfig.Connection, retrievedConfig.Connection)
+	}
+	if retrievedConfig.Options["option1"] != initialConfig.Options["option1"] {
+		t.Errorf("Expected option1 to be %s, got %s", initialConfig.Options["option1"], retrievedConfig.Options["option1"])
+	}
+	if retrievedConfig.Options["option2"] != initialConfig.Options["option2"] {
+		t.Errorf("Expected option2 to be %s, got %s", initialConfig.Options["option2"], retrievedConfig.Options["option2"])
+	}
+
+	// Update the topic config
+	updatedConfig := outbound.TopicConfig{
+		Name:       "test-topic", // name must remain the same
+		Adapter:    "fs",         // adapter type remains the same
+		Connection: tempDir,      // connection remains the same
+		Options: map[string]string{
+			"option1": "new-value1", // changed value
+			"option3": "value3",     // new option
+			// option2 is removed
+		},
+	}
+
+	err = repo.UpdateTopicConfig(context.Background(), updatedConfig)
+	if err != nil {
+		t.Fatalf("Failed to update topic config: %v", err)
+	}
+
+	// Get the updated config
+	retrievedConfig, err = repo.GetTopicConfig(context.Background(), "test-topic")
+	if err != nil {
+		t.Fatalf("Failed to get updated topic config: %v", err)
+	}
+
+	// Verify updated config
+	if retrievedConfig.Name != updatedConfig.Name {
+		t.Errorf("Expected topic name to be %s, got %s", updatedConfig.Name, retrievedConfig.Name)
+	}
+	if retrievedConfig.Adapter != updatedConfig.Adapter {
+		t.Errorf("Expected adapter to be %s, got %s", updatedConfig.Adapter, retrievedConfig.Adapter)
+	}
+	if retrievedConfig.Options["option1"] != updatedConfig.Options["option1"] {
+		t.Errorf("Expected option1 to be %s, got %s", updatedConfig.Options["option1"], retrievedConfig.Options["option1"])
+	}
+	if retrievedConfig.Options["option3"] != updatedConfig.Options["option3"] {
+		t.Errorf("Expected option3 to be %s, got %s", updatedConfig.Options["option3"], retrievedConfig.Options["option3"])
+	}
+	if _, exists := retrievedConfig.Options["option2"]; exists {
+		t.Errorf("Expected option2 to be removed, but it still exists with value %s", retrievedConfig.Options["option2"])
+	}
+
+	// Try to update a non-existent topic
+	err = repo.UpdateTopicConfig(context.Background(), outbound.TopicConfig{
+		Name: "non-existent-topic",
+	})
+	if err == nil {
+		t.Errorf("Expected error when updating non-existent topic, but got nil")
+	}
+
+	// Verify config file was actually updated on disk
+	configPath := filepath.Join(tempDir, "configs", "test-topic.json")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("Failed to read config file: %v", err)
+	}
+
+	var fileConfig outbound.TopicConfig
+	err = json.Unmarshal(data, &fileConfig)
+	if err != nil {
+		t.Fatalf("Failed to unmarshal config file: %v", err)
+	}
+
+	if fileConfig.Options["option1"] != updatedConfig.Options["option1"] {
+		t.Errorf("Config file not updated correctly. Expected option1 to be %s, got %s",
+			updatedConfig.Options["option1"], fileConfig.Options["option1"])
+	}
+	if fileConfig.Options["option3"] != updatedConfig.Options["option3"] {
+		t.Errorf("Config file not updated correctly. Expected option3 to be %s, got %s",
+			updatedConfig.Options["option3"], fileConfig.Options["option3"])
+	}
+	if _, exists := fileConfig.Options["option2"]; exists {
+		t.Errorf("Config file not updated correctly. Expected option2 to be removed, but it still exists")
+	}
+}
+
+func TestGetTopicConfig(t *testing.T) {
+	// Create a temporary directory
+	tempDir := createTempDir(t)
+
+	// Initialize the repository
+	repo := NewFileSystemEventRepository(tempDir)
+	err := repo.Initialize(context.Background())
+	if err != nil {
+		t.Fatalf("Failed to initialize repository: %v", err)
+	}
+
+	// Try to get config for a non-existent topic
+	_, err = repo.GetTopicConfig(context.Background(), "non-existent-topic")
+	if err == nil {
+		t.Errorf("Expected error when getting config for non-existent topic, but got nil")
+	}
+
+	// Create topic with configuration
+	config := outbound.TopicConfig{
+		Name:       "test-topic",
+		Adapter:    "fs",
+		Connection: tempDir,
+		Options: map[string]string{
+			"option1": "value1",
+			"option2": "value2",
+		},
+	}
+
+	err = repo.CreateTopic(context.Background(), config)
+	if err != nil {
+		t.Fatalf("Failed to create topic: %v", err)
+	}
+
+	// Get the topic config
+	retrievedConfig, err := repo.GetTopicConfig(context.Background(), "test-topic")
+	if err != nil {
+		t.Fatalf("Failed to get topic config: %v", err)
+	}
+
+	// Verify retrieved config matches original
+	if retrievedConfig.Name != config.Name {
+		t.Errorf("Expected topic name to be %s, got %s", config.Name, retrievedConfig.Name)
+	}
+	if retrievedConfig.Adapter != config.Adapter {
+		t.Errorf("Expected adapter to be %s, got %s", config.Adapter, retrievedConfig.Adapter)
+	}
+	if retrievedConfig.Connection != config.Connection {
+		t.Errorf("Expected connection to be %s, got %s", config.Connection, retrievedConfig.Connection)
+	}
+	if retrievedConfig.Options["option1"] != config.Options["option1"] {
+		t.Errorf("Expected option1 to be %s, got %s", config.Options["option1"], retrievedConfig.Options["option1"])
+	}
+	if retrievedConfig.Options["option2"] != config.Options["option2"] {
+		t.Errorf("Expected option2 to be %s, got %s", config.Options["option2"], retrievedConfig.Options["option2"])
+	}
+
+	// Test retrieving config after repository is reinitialized
+	// Close and reopen repository
+	err = repo.Close()
+	if err != nil {
+		t.Fatalf("Failed to close repository: %v", err)
+	}
+
+	// Create a new instance of the repository with the same base path
+	repo2 := NewFileSystemEventRepository(tempDir)
+	err = repo2.Initialize(context.Background())
+	if err != nil {
+		t.Fatalf("Failed to initialize repository: %v", err)
+	}
+
+	// Get the topic config again
+	retrievedConfig, err = repo2.GetTopicConfig(context.Background(), "test-topic")
+	if err != nil {
+		t.Fatalf("Failed to get topic config after reinitializing: %v", err)
+	}
+
+	// Verify config is still correct
+	if retrievedConfig.Name != config.Name {
+		t.Errorf("After reinitializing, expected topic name to be %s, got %s", config.Name, retrievedConfig.Name)
+	}
+	if retrievedConfig.Adapter != config.Adapter {
+		t.Errorf("After reinitializing, expected adapter to be %s, got %s", config.Adapter, retrievedConfig.Adapter)
+	}
+	if retrievedConfig.Options["option1"] != config.Options["option1"] {
+		t.Errorf("After reinitializing, expected option1 to be %s, got %s", config.Options["option1"], retrievedConfig.Options["option1"])
+	}
+	if retrievedConfig.Options["option2"] != config.Options["option2"] {
+		t.Errorf("After reinitializing, expected option2 to be %s, got %s", config.Options["option2"], retrievedConfig.Options["option2"])
 	}
 }
