@@ -33,7 +33,7 @@
 
 ## 3. Event Operations
 
-- [ ] 3.1. Implement `AppendEvents` method
+- [x] 3.1. Implement `AppendEvents` method
    - Add thread-safe locking
    - Verify topic exists
    - Get latest version from cache
@@ -45,7 +45,7 @@
    - Implement atomic file writes using temp files
    - Update latest version cache
 
-- [ ] 3.2. Implement `GetEvents` method
+- [x] 3.2. Implement `GetEvents` method
    - Add read locks for thread safety
    - Verify topic exists
    - Read directory entries for the topic
@@ -54,11 +54,11 @@
    - Sort events by version
    - Return ordered event list
 
-- [ ] 3.3. Implement `GetEventsByType` method
+- [x] 3.3. Implement `GetEventsByType` method
    - Leverage GetEvents functionality
    - Filter results by event type
 
-- [ ] 3.4. Implement `GetLatestVersion` method
+- [x] 3.4. Implement `GetLatestVersion` method
    - Use cached version for efficiency
    - Handle errors for non-existent topics
 
