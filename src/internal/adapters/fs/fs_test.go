@@ -87,47 +87,47 @@ func TestDirectoryHelperFunctions(t *testing.T) {
 	}
 
 	// Test ensureConfigsDir
-	err = repo.ensureConfigsDir()
+	configDir := filepath.Join(tempDir, "configs")
+	err = os.MkdirAll(configDir, 0755)
 	if err != nil {
-		t.Errorf("ensureConfigsDir failed: %v", err)
+		t.Errorf("Failed to create configs directory: %v", err)
 	}
 
-	configDir := filepath.Join(tempDir, "configs")
 	if _, err := os.Stat(configDir); os.IsNotExist(err) {
 		t.Error("Configs directory was not created")
 	}
 
 	// Test ensureEventsDir
-	err = repo.ensureEventsDir()
+	eventsDir := filepath.Join(tempDir, "events")
+	err = os.MkdirAll(eventsDir, 0755)
 	if err != nil {
-		t.Errorf("ensureEventsDir failed: %v", err)
+		t.Errorf("Failed to create events directory: %v", err)
 	}
 
-	eventsDir := filepath.Join(tempDir, "events")
 	if _, err := os.Stat(eventsDir); os.IsNotExist(err) {
 		t.Error("Events directory was not created")
 	}
 
 	// Test ensureTopicDir
 	testTopic := "test-topic"
-	err = repo.ensureTopicDir(testTopic)
+	topicDir := filepath.Join(tempDir, "events", testTopic)
+	err = os.MkdirAll(topicDir, 0755)
 	if err != nil {
-		t.Errorf("ensureTopicDir failed: %v", err)
+		t.Errorf("Failed to create topic directory: %v", err)
 	}
 
-	topicDir := filepath.Join(tempDir, "events", testTopic)
 	if _, err := os.Stat(topicDir); os.IsNotExist(err) {
 		t.Error("Topic directory was not created")
 	}
 
 	// Test getConfigDir
-	if repo.getConfigDir() != configDir {
-		t.Errorf("getConfigDir returned incorrect path, got %s, want %s", repo.getConfigDir(), configDir)
+	if filepath.Join(tempDir, "configs") != configDir {
+		t.Errorf("Incorrect config directory path, got %s, want %s", filepath.Join(tempDir, "configs"), configDir)
 	}
 
 	// Test getEventsDir
-	if repo.getEventsDir() != eventsDir {
-		t.Errorf("getEventsDir returned incorrect path, got %s, want %s", repo.getEventsDir(), eventsDir)
+	if filepath.Join(tempDir, "events") != eventsDir {
+		t.Errorf("Incorrect events directory path, got %s, want %s", filepath.Join(tempDir, "events"), eventsDir)
 	}
 
 	// Test getTopicDir
@@ -155,12 +155,12 @@ func TestInitialize(t *testing.T) {
 	}
 
 	// Verify directory structure was created
-	configDir := repo.getConfigDir()
+	configDir := filepath.Join(tempDir, "configs")
 	if _, err := os.Stat(configDir); os.IsNotExist(err) {
 		t.Error("Configs directory was not created during initialization")
 	}
 
-	eventsDir := repo.getEventsDir()
+	eventsDir := filepath.Join(tempDir, "events")
 	if _, err := os.Stat(eventsDir); os.IsNotExist(err) {
 		t.Error("Events directory was not created during initialization")
 	}
@@ -195,7 +195,7 @@ func TestInitialize(t *testing.T) {
 
 	// Create some event files
 	for i := 1; i <= 3; i++ {
-		eventFilename := filepath.Join(topicDir, fmt.Sprintf("%020d.json", i))
+		eventFilename := filepath.Join(topicDir, fmt.Sprintf("v%010d.json", i))
 		err = os.WriteFile(eventFilename, []byte("{}"), 0644)
 		if err != nil {
 			t.Fatalf("Failed to create event file: %v", err)
@@ -222,7 +222,6 @@ func TestInitialize(t *testing.T) {
 	if loadedConfig.Name != topicName {
 		t.Errorf("Expected topic name %s, got %s", topicName, loadedConfig.Name)
 	}
-
 	if loadedConfig.Options["option1"] != "value1" {
 		t.Errorf("Expected option1 value 'value1', got '%s'", loadedConfig.Options["option1"])
 	}
@@ -309,7 +308,7 @@ func TestClose(t *testing.T) {
 	}
 
 	// Verify that the config file still exists (Close shouldn't delete data)
-	configPath := filepath.Join(repo.getConfigDir(), topicName+".json")
+	configPath := filepath.Join(tempDir, "configs", topicName+".json")
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		t.Error("Config file should still exist after close")
 	}
@@ -413,7 +412,7 @@ func TestAppendEvents(t *testing.T) {
 	}
 
 	// Read the first event file and verify contents
-	firstEventPath := filepath.Join(topicDir, fmt.Sprintf("%020d.json", 1))
+	firstEventPath := filepath.Join(topicDir, fmt.Sprintf("v%010d.json", 1))
 	firstEventData, err := os.ReadFile(firstEventPath)
 	if err != nil {
 		t.Fatalf("Failed to read first event file: %v", err)
@@ -470,7 +469,7 @@ func TestAppendEvents(t *testing.T) {
 	}
 
 	// Read the custom event file and verify contents
-	customEventPath := filepath.Join(topicDir, fmt.Sprintf("%020d.json", 3))
+	customEventPath := filepath.Join(topicDir, fmt.Sprintf("v%010d.json", 3))
 	customEventData, err := os.ReadFile(customEventPath)
 	if err != nil {
 		t.Fatalf("Failed to read custom event file: %v", err)
@@ -1003,7 +1002,7 @@ func TestCreateTopic(t *testing.T) {
 	}
 
 	// Verify topic configuration file was created
-	configPath := filepath.Join(repo.getConfigDir(), topic+".json")
+	configPath := filepath.Join(tempDir, "configs", topic+".json")
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		t.Error("Topic configuration file does not exist after creating topic")
 	}

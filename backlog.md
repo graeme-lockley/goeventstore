@@ -1,195 +1,220 @@
-# File System Storage Adaptor Implementation Backlog
+# EventStore Implementation Backlog
 
-## 1. Core Infrastructure
+## Overview
+This backlog contains detailed tasks for implementing the EventStore functionality, which will provide a high-level interface to the event repository with configuration management through events.
 
-- [x] 1.1. Define the `FileSystemEventRepository` struct with required fields:
-   - Base path for storage
-   - Read-write mutex for thread safety
-   - Maps for caching latest versions and topic configs
+## 1. Create EventStore Package Structure
+- [x] Create `src/internal/eventstore` directory
+- [x] Create `src/internal/eventstore/commands` directory for command handlers
+- [x] Create `src/internal/eventstore/queries` directory for query handlers
+- [x] Create `src/internal/eventstore/models` directory for domain models
 
-- [x] 1.2. Implement constructor function `NewFileSystemEventRepository`
-   - Accept base directory path parameter
-   - Initialize maps and internal data structures
+## 2. Define Core Models and Interfaces
+### 2.1 Configuration Event Types
+- [x] Define `EventTypeTopicCreated` constant
+- [x] Define `EventTypeTopicUpdated` constant
+- [x] Define `EventTypeTopicDeleted` constant
 
-- [x] 1.3. Create directory structure helper functions
-   - Create base directory function
-   - Create configs subdirectory function
-   - Create events subdirectory function
-   - Create topic-specific subdirectories function
+### 2.2 EventStore Struct and Interface
+- [x] Define `EventStore` struct with repository, config topic name, write model, mutex, and logger fields
+- [x] Add `isInitialized` flag to track initialization state
+- [x] Create functional options pattern for configuring the EventStore
+  - [x] Implement `WithLogger` option
+  - [x] Implement `WithConfigTopicName` option
+- [x] Define `NewEventStore` constructor function
 
-## 2. Initialization and Lifecycle
+## 3. Implement Main EventStore Functionality
+### 3.1 EventStore Initialization
+- [x] Implement `Initialize` method to set up the EventStore
+  - [x] Add logic to initialize underlying repository
+  - [x] Check if configuration topic exists
+  - [x] Create configuration topic if needed
+  - [x] Load configuration events and build write model
+  - [x] Set initialization flag
 
-- [x] 2.1. Implement the `Initialize` method
-   - Create the base directory structure if it doesn't exist
-   - Load existing topic configurations from the configs directory
-   - Determine latest versions for each topic
-   - Handle initialization errors appropriately
+### 3.2 Write Model Management
+- [x] Implement `rebuildWriteModel` function to load and process all configuration events
+- [x] Create event handlers for different configuration event types:
+  - [x] Implement `handleTopicCreated` handler
+  - [x] Implement `handleTopicUpdated` handler 
+  - [x] Implement `handleTopicDeleted` handler
+- [x] Add validation and error handling for event processing
 
-- [x] 2.2. Implement the `Close` method
-   - Add any necessary cleanup operations
+## 4. EventStore Refactoring for Multi-Repository Support
+The EventStore needs to be refactored to manage multiple repositories based on event stream configurations.
 
-- [x] 2.3. Implement `determineLatestVersion` helper function
-   - Scan topic directory to find highest event version
+### 4.1 Event Stream Configuration (Implement First)
+- [x] Create `models/eventstream.go` file for configuration structures
+- [x] Create an `EventStreamConfig` struct:
+  - [x] Define fields for name, adapter, connection, and options
+  - [x] Add validation method to ensure required fields are present
+  - [x] Create constructor function with sensible defaults
+- [x] Create an `EventStoreConfig` struct:
+  - [x] Add field for configuration event stream
+  - [x] Add field for logger
+  - [x] Implement validation method
+  - [x] Create constructor with default values
+- [x] Write unit tests for both configuration structs in `models/eventstream_test.go`
 
-## 3. Event Operations
+### 4.2 Repository Management (Implement Second)
+- [x] Create `repository_registry.go` file
+- [x] Move existing repository factory code from `factory.go` (if exists)
+- [x] Create a `RepositoryRegistry` struct:
+  - [x] Add map to store repositories keyed by "adapter:connection"
+  - [x] Implement mutex for thread safety
+  - [x] Define initialization function
+- [x] Implement core registry methods:
+  - [x] `Get(adapter, connection string) (repository, bool)` to retrieve existing repositories
+  - [x] `GetOrCreate(config EventStreamConfig) (repository, error)` to get or create repositories
+  - [x] `createRepository(config EventStreamConfig) (repository, error)` to instantiate repositories
+  - [x] `Close()` to properly close all managed repositories
+  - [x] `Health()` to collect health information from all repositories
+- [x] Write unit tests for the registry in `repository_registry_test.go`
 
-- [x] 3.1. Implement `AppendEvents` method
-   - Add thread-safe locking
-   - Verify topic exists
-   - Get latest version from cache
-   - Ensure topic directory exists
-   - Generate missing event fields (ID, timestamp)
-   - Increment and assign version numbers
-   - Marshal events to JSON format
-   - Create padded filename format for events
-   - Implement atomic file writes using temp files
-   - Update latest version cache
+### 4.3 Update EventStore Structure (Implement Third)
+- [x] Update `EventStore` struct:
+  - [x] Replace single repository field with registry
+  - [x] Add configStream field to store configuration event stream settings
+  - [x] Keep other fields (topicConfigs, logger, mutex, isInitialized)
+- [x] Update `NewEventStore` constructor:
+  - [x] Change parameter from repository to EventStoreConfig
+  - [x] Initialize the repository registry
+  - [x] Set the configuration event stream
+  - [x] Keep the rest of the initialization logic
+- [x] Create helper methods:
+  - [x] `getConfigRepository() (repository, error)` to get the config stream repository
+  - [x] `getRepositoryForTopic(topicName string) (repository, error)` with error handling for unknown topics
+- [x] Update unit tests for the constructor
 
-- [x] 3.2. Implement `GetEvents` method
-   - Add read locks for thread safety
-   - Verify topic exists
-   - Read directory entries for the topic
-   - Filter events by version
-   - Read and unmarshal event files
-   - Sort events by version
-   - Return ordered event list
+### 4.4 Update Initialize Method (Implement Fourth)
+- [x] Update `Initialize` method:
+  - [x] Use `getConfigRepository()` to get the config repository
+  - [x] Create config topic if not exists
+  - [x] Rebuild write model by loading all config events
+- [x] Implement `rebuildWriteModel()` method:
+  - [x] Clear existing state
+  - [x] Load all events from configuration topic
+  - [x] Apply each event to rebuild the write model
+- [x] Implement `applyConfigurationEvent(event)` method:
+  - [x] Handle topic created/updated/deleted events
+- [x] Update existing unit tests
 
-- [x] 3.3. Implement `GetEventsByType` method
-   - Leverage GetEvents functionality
-   - Filter results by event type
+### 4.5 Update Topic Operations (Implement Fifth)
+- [x] Update `CreateTopic` method:
+  - [x] Validate topic configuration
+  - [x] Get or create appropriate repository
+  - [x] Create topic in that repository
+  - [x] Get configuration event stream repository
+  - [x] Record creation event in configuration topic
+  - [x] Update write model
+- [x] Update `UpdateTopic` method:
+  - [x] Validate topic exists and configuration
+  - [x] Get original topic configuration
+  - [x] Check if adapter/connection changed
+  - [x] If changed, get or create new repository
+  - [x] Update topic in appropriate repository
+  - [x] Record update event in configuration topic
+  - [x] Update write model
+- [x] Update `DeleteTopic` method:
+  - [x] Validate topic exists
+  - [x] Get repository for the topic
+  - [x] Delete topic in that repository
+  - [x] Record deletion event in configuration topic
+  - [x] Update write model
+- [x] Update `GetTopic` and `ListTopics` methods to use write model
+- [x] Write unit tests for all topic operations
 
-- [x] 3.4. Implement `GetLatestVersion` method
-   - Use cached version for efficiency
-   - Handle errors for non-existent topics
+### 4.6 Update Event Operations (Implement Sixth)
+- [x] Update `AppendEvents` method:
+  - [x] Get repository for the topic
+  - [x] Append events to that repository
+- [x] Update `GetEvents` method:
+  - [x] Get repository for the topic
+  - [x] Retrieve events from that repository
+- [x] Update `GetEventsByType` method:
+  - [x] Get repository for the topic
+  - [x] Retrieve events by type from that repository
+- [x] Update `GetLatestVersion` method:
+  - [x] Get repository for the topic
+  - [x] Get latest version from that repository
+- [x] Write unit tests for all event operations
 
-## 4. Topic Management
+### 4.7 Update Lifecycle Management (Implement Seventh)
+- [x] Enhance `Close` method:
+  - [x] Close all repositories through the registry
+  - [x] Clean up any other resources
+- [x] Update `Health` method:
+  - [x] Collect health information from all repositories
+  - [x] Aggregate and return combined health status
+- [x] Write unit tests for lifecycle methods
 
-- [x] 4.1. Implement `CreateTopic` method
-   - Verify topic doesn't already exist
-   - Create topic directory
-   - Marshal and save topic configuration
-   - Update in-memory state
+### 4.8 Integration Testing (Implement Last)
+- [ ] Create integration tests for multi-repository scenarios:
+  - [ ] Test topics with different repository adapters
+  - [ ] Test repository reuse for identical configurations
+  - [ ] Test error handling for adapter failures
+  - [ ] Test persistence across EventStore instances
+  - [ ] Test concurrent operations on multiple repositories
 
-- [x] 4.2. Implement `DeleteTopic` method
-   - Verify topic exists
-   - Remove topic directory and files
-   - Remove topic configuration file
-   - Update in-memory state
+## 5. Topic Management Operations
+- [ ] Implement `CreateTopic` method
+  - [ ] Validate topic configuration
+  - [ ] Create topic in repository
+  - [ ] Record creation event in configuration topic
+  - [ ] Update write model
+- [ ] Implement `UpdateTopic` method
+  - [ ] Validate topic configuration
+  - [ ] Update topic in repository
+  - [ ] Record update event in configuration topic
+  - [ ] Update write model
+- [ ] Implement `DeleteTopic` method
+  - [ ] Validate topic name
+  - [ ] Delete topic in repository
+  - [ ] Record deletion event in configuration topic
+  - [ ] Update write model
+- [ ] Implement `GetTopic` method to retrieve a specific topic configuration
+- [ ] Implement `ListTopics` method to list all topic configurations
 
-- [x] 4.3. Implement `ListTopics` method
-   - Return list of all topic configurations
+## 6. Event Operations
+- [ ] Implement `AppendEvents` method to add events to a topic
+- [ ] Implement `GetEvents` method to retrieve events from a topic
+- [ ] Implement `GetEventsByType` method to retrieve events of a specific type
+- [ ] Implement `GetLatestVersion` method to get the latest event version for a topic
 
-- [x] 4.4. Implement `TopicExists` method
-   - Check in-memory map for efficiency
+## 7. Lifecycle and Health Operations
+- [ ] Implement `Health` method to report health information
+- [ ] Implement `Close` method to clean up resources
 
-- [x] 4.5. Implement `UpdateTopicConfig` method
-   - Verify topic exists
-   - Marshal updated configuration
-   - Implement atomic file update
-   - Update in-memory state
+## 8. Implement Repository Factory
+- [ ] Create `factory.go` file for repository creation
+- [ ] Implement `NewEventRepository` function to create repositories based on adapter type
+- [ ] Add support for memory adapter
+- [ ] Add support for file system adapter
+- [ ] Add placeholder for future adapters (postgres, blob)
 
-- [x] 4.6. Implement `GetTopicConfig` method
-   - Return cached config for efficiency
+## 9. Add Error Handling and Validation
+- [ ] Create validation functions for topic configurations
+- [ ] Add proper error types and error handling
+- [ ] Implement thread-safety with mutex locks
+- [ ] Add proper logging throughout the codebase
 
-## 5. Health and Monitoring
+## 10. Create Tests for EventStore
+### 10.1 Unit Tests
+- [ ] Create `eventstore_test.go` file
+- [ ] Test EventStore initialization
+- [ ] Test topic creation, update, and deletion
+- [ ] Test configuration event handling
+- [ ] Test write model rebuilding
+- [ ] Test event operations
+- [ ] Test error conditions and edge cases
 
-- [ ] 5.1. Implement `Health` method
-   - Report status of the repository
-   - Include topic count and event counts
-   - Add disk space information
-   - Report any encountered errors
+### 10.2 Integration Tests
+- [ ] Test with memory adapter
+- [ ] Test with file system adapter
+- [ ] Test persistence across EventStore instances
+- [ ] Test concurrent operations
 
-## 6. File System Utilities
-
-- [ ] 6.1. Implement file locking mechanism for concurrent access
-
-- [ ] 6.2. Create atomic file write utilities
-
-- [ ] 6.3. Implement proper error handling for file operations
-
-- [ ] 6.4. Add directory existence checking functions
-
-- [ ] 6.5. Create event file naming convention utilities
-
-## 7. Unit Tests
-
-- [ ] 7.1. Test constructor and initialization
-   - Test with existing and non-existing directories
-   - Test loading existing configurations
-
-- [ ] 7.2. Test event operations
-   - Test appending events
-   - Test retrieving events by version
-   - Test retrieving events by type
-   - Test version management
-   - Test event ID and timestamp generation
-
-- [ ] 7.3. Test topic management
-   - Test topic creation
-   - Test topic deletion
-   - Test listing topics
-   - Test topic existence checks
-   - Test updating topic configuration
-   - Test retrieving topic configuration
-
-- [ ] 7.4. Test error conditions
-   - Test operations on non-existent topics
-   - Test concurrent access scenarios
-   - Test file system error handling
-   - Test invalid JSON handling
-
-- [ ] 7.5. Test health reporting
-   - Verify correct status reporting
-   - Verify event counts
-   - Test disk space reporting
-
-## 8. Integration Tests
-
-- [ ] 8.1. Test persistence across application restarts
-   - Create topics and add events
-   - Close and reopen repository
-   - Verify all data is preserved
-
-- [ ] 8.2. Test concurrent operations
-   - Test multiple goroutines writing to the same topic
-   - Test concurrent reads and writes
-   - Test concurrent topic operations
-
-- [ ] 8.3. Test performance
-   - Benchmark appending large numbers of events
-   - Benchmark retrieving events with various filters
-   - Test with different directory sizes and depths
-
-- [ ] 8.4. Test disk space management
-   - Test behavior when disk space is low
-   - Test with different file permissions
-
-## 9. Edge Case Handling
-
-- [ ] 9.1. Implement safety checks for maximum file counts
-
-- [ ] 9.2. Add error handling for filesystem-specific limits
-
-- [ ] 9.3. Add recovery mechanisms for partially written files
-
-- [ ] 9.4. Handle long file paths and special characters in event data
-
-## 10. Documentation
-
-- [ ] 10.1. Add inline documentation for all public functions
-
-- [ ] 10.2. Create usage examples
-
-- [ ] 10.3. Document performance characteristics
-
-- [ ] 10.4. Add troubleshooting guides for common issues
-
-## 11. Optimization (Optional)
-
-- [ ] 11.1. Implement event partitioning for large topics
-
-- [ ] 11.2. Add optional compression support
-
-- [ ] 11.3. Create index files for faster retrieval
-
-- [ ] 11.4. Implement caching strategies for frequent queries 
+## 11. Documentation
+- [ ] Add godoc comments to all exported functions and types
+- [ ] Create usage examples
+- [ ] Document event sourcing approach for configuration management

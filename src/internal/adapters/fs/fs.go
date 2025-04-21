@@ -3,6 +3,7 @@ package fs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -18,6 +19,12 @@ import (
 	"github.com/google/uuid"
 )
 
+// Common errors
+var (
+	ErrNotReady = errors.New("repository not in ready state")
+	// Using ErrTopicAlreadyExists from errors.go instead of redefining it here
+)
+
 // FileSystemEventRepository implements the EventRepository interface using file system storage
 type FileSystemEventRepository struct {
 	mu            sync.RWMutex
@@ -25,6 +32,7 @@ type FileSystemEventRepository struct {
 	latestVersion map[string]int64                // topic -> latest version (in-memory cache)
 	topicConfigs  map[string]outbound.TopicConfig // In-memory cache of topic configurations
 	logger        *log.Logger                     // Standard Go logger
+	state         outbound.RepositoryState        // Current state of the repository
 }
 
 // NewFileSystemEventRepository creates a new file system event repository with the specified base path
@@ -34,6 +42,7 @@ func NewFileSystemEventRepository(basePath string) *FileSystemEventRepository {
 		latestVersion: make(map[string]int64),
 		topicConfigs:  make(map[string]outbound.TopicConfig),
 		logger:        log.New(os.Stderr, "[FS-REPO] ", log.LstdFlags),
+		state:         outbound.StateUninitialized,
 	}
 }
 
@@ -50,11 +59,20 @@ func (fs *FileSystemEventRepository) Initialize(ctx context.Context) error {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 
+	// Only initialize if not already in ready state
+	if fs.state == outbound.StateReady {
+		return nil
+	}
+
+	// Mark as initializing
+	fs.state = outbound.StateInitializing
+
 	fs.logger.Printf("Initializing file system event repository at %s", fs.basePath)
 
 	// Ensure base directory exists
 	if err := fs.ensureBaseDir(); err != nil {
 		fs.logger.Printf("Failed to ensure base directory exists: %v", err)
+		fs.state = outbound.StateFailed
 		return err
 	}
 
@@ -62,14 +80,16 @@ func (fs *FileSystemEventRepository) Initialize(ctx context.Context) error {
 	configDir := filepath.Join(fs.basePath, "configs")
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		fs.logger.Printf("Failed to create configs directory: %v", err)
-		return NewFileIOError(configDir, err)
+		fs.state = outbound.StateFailed
+		return fmt.Errorf("failed to create configs directory: %w", err)
 	}
 
 	// Ensure events directory exists
 	eventsDir := filepath.Join(fs.basePath, "events")
 	if err := os.MkdirAll(eventsDir, 0755); err != nil {
 		fs.logger.Printf("Failed to create events directory: %v", err)
-		return NewFileIOError(eventsDir, err)
+		fs.state = outbound.StateFailed
+		return fmt.Errorf("failed to create events directory: %w", err)
 	}
 
 	// Load all topic configurations
@@ -81,10 +101,12 @@ func (fs *FileSystemEventRepository) Initialize(ctx context.Context) error {
 		// If directory doesn't exist, just initialize empty maps
 		if os.IsNotExist(err) {
 			fs.logger.Printf("Config directory doesn't exist, initializing empty maps")
+			fs.state = outbound.StateReady
 			return nil
 		}
 		fs.logger.Printf("Failed to read configs directory: %v", err)
-		return NewFileIOError(configDir, err)
+		fs.state = outbound.StateFailed
+		return fmt.Errorf("failed to read configs directory: %w", err)
 	}
 
 	// Load each topic configuration
@@ -114,7 +136,70 @@ func (fs *FileSystemEventRepository) Initialize(ctx context.Context) error {
 	}
 
 	fs.logger.Printf("Initialized file system event repository with %d topics", len(fs.topicConfigs))
+	fs.state = outbound.StateReady
 	return nil
+}
+
+// GetState returns the current state of the repository
+func (fs *FileSystemEventRepository) GetState() outbound.RepositoryState {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+	return fs.state
+}
+
+// Reopen reopens a closed repository
+func (fs *FileSystemEventRepository) Reopen(ctx context.Context) error {
+	fs.mu.Lock()
+
+	// Only reopen if closed
+	if fs.state != outbound.StateClosed {
+		fs.mu.Unlock()
+		return fmt.Errorf("repository is not in closed state, current state: %s", fs.state)
+	}
+
+	fs.logger.Printf("Reopening file system event repository at %s", fs.basePath)
+
+	// Recreate data structures
+	fs.latestVersion = make(map[string]int64)
+	fs.topicConfigs = make(map[string]outbound.TopicConfig)
+
+	// Mark as uninitialized so that Initialize will do a full reload
+	fs.state = outbound.StateUninitialized
+
+	// Unlock before calling Initialize
+	fs.mu.Unlock()
+
+	// Call initialize to reload data
+	return fs.Initialize(ctx)
+}
+
+// Reset clears all data and reinitializes the repository
+func (fs *FileSystemEventRepository) Reset(ctx context.Context) error {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+
+	// Cannot reset if closed
+	if fs.state == outbound.StateClosed {
+		return fmt.Errorf("repository is closed, cannot reset")
+	}
+
+	fs.logger.Printf("Resetting file system event repository at %s", fs.basePath)
+
+	// Mark as initializing
+	fs.state = outbound.StateInitializing
+
+	// Clear in-memory data
+	fs.latestVersion = make(map[string]int64)
+	fs.topicConfigs = make(map[string]outbound.TopicConfig)
+
+	// Mark as uninitialized so that Initialize will do a full reload
+	fs.state = outbound.StateUninitialized
+
+	// Unlock before calling Initialize
+	fs.mu.Unlock()
+
+	// Call initialize to reload data
+	return fs.Initialize(ctx)
 }
 
 // Close closes the file system event repository
@@ -122,10 +207,23 @@ func (fs *FileSystemEventRepository) Close() error {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 
+	// Only close if in ready state
+	if fs.state != outbound.StateReady {
+		return nil
+	}
+
 	fs.logger.Printf("Closing file system event repository")
-	// Nothing special to do for now, just clear maps
+
+	// Mark as closing
+	fs.state = outbound.StateClosing
+
+	// Clear in-memory caches
 	fs.latestVersion = nil
 	fs.topicConfigs = nil
+
+	// Mark as closed
+	fs.state = outbound.StateClosed
+
 	return nil
 }
 
@@ -134,30 +232,26 @@ func (fs *FileSystemEventRepository) AppendEvents(ctx context.Context, topic str
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 
-	fs.logger.Printf("Appending %d events to topic %s", len(events), topic)
+	// Check repository state
+	if fs.state != outbound.StateReady {
+		return ErrNotReady
+	}
 
-	// Check if topic exists
+	// Verify topic exists
 	if _, exists := fs.topicConfigs[topic]; !exists {
-		fs.logger.Printf("Topic %s not found", topic)
-		return NewTopicNotFoundError(topic)
+		return ErrTopicNotFound
 	}
 
-	// Get current version
-	currentVersion, exists := fs.latestVersion[topic]
-	if !exists {
-		// This should not happen as we check for topic existence above
-		fs.logger.Printf("Topic %s exists but version not found, initializing to 0", topic)
-		currentVersion = 0
-	}
+	// Get current latest version
+	latestVersion := fs.latestVersion[topic]
 
-	// Ensure events directory exists
-	topicDir := filepath.Join(fs.basePath, "events", topic)
+	// Ensure topic directory exists
+	topicDir := fs.getTopicDir(topic)
 	if err := os.MkdirAll(topicDir, 0755); err != nil {
-		fs.logger.Printf("Failed to create topic events directory: %v", err)
-		return NewFileIOError(topicDir, err)
+		return fmt.Errorf("failed to create topic directory: %w", err)
 	}
 
-	// Process each event to set required fields and write to individual files
+	// Process and save each event
 	for i := range events {
 		// Set ID if not provided
 		if events[i].ID == "" {
@@ -169,92 +263,473 @@ func (fs *FileSystemEventRepository) AppendEvents(ctx context.Context, topic str
 			events[i].Timestamp = time.Now().UnixNano()
 		}
 
-		// Set topic
+		// Increment version
+		latestVersion++
+		events[i].Version = latestVersion
 		events[i].Topic = topic
 
-		// Increment and assign version
-		currentVersion++
-		events[i].Version = currentVersion
-
-		// Create filename with version (format: 00000000000000000001.json)
-		// Using 20-digit zero-padded format to match tests
-		eventPath := filepath.Join(topicDir, fmt.Sprintf("%020d.json", currentVersion))
-
-		// Marshal individual event to JSON
-		eventData, err := json.Marshal(events[i])
+		// Marshal event
+		data, err := json.Marshal(events[i])
 		if err != nil {
-			fs.logger.Printf("Failed to marshal event: %v", err)
 			return fmt.Errorf("failed to marshal event: %w", err)
 		}
 
-		// Write to file
-		if err := os.WriteFile(eventPath, eventData, 0644); err != nil {
-			fs.logger.Printf("Failed to write event to file: %v", err)
-			return NewFileIOError(eventPath, err)
+		// Write to file (use version as filename for ordering)
+		filename := filepath.Join(topicDir, fmt.Sprintf("v%010d.json", latestVersion))
+
+		// Write to temporary file first
+		tempFilename := filename + ".tmp"
+		if err := os.WriteFile(tempFilename, data, 0644); err != nil {
+			return fmt.Errorf("failed to write event file: %w", err)
+		}
+
+		// Rename for atomic update
+		if err := os.Rename(tempFilename, filename); err != nil {
+			os.Remove(tempFilename) // Clean up temp file
+			return fmt.Errorf("failed to finalize event file: %w", err)
 		}
 	}
 
-	// Update in-memory version
-	fs.latestVersion[topic] = currentVersion
-	fs.logger.Printf("Successfully appended events to topic %s, new version: %d", topic, currentVersion)
+	// Update latest version cache
+	fs.latestVersion[topic] = latestVersion
 
 	return nil
 }
 
-// determineLatestVersion scans the topic directory to find the highest event version
-func (fs *FileSystemEventRepository) determineLatestVersion(topic string) (int64, error) {
-	topicDir := fs.getTopicDir(topic)
-	fs.logger.Printf("[DEBUG] Topic %s: Determining latest version from directory: %s", topic, topicDir)
+// GetEvents retrieves events for a topic, starting from a specific version
+func (fs *FileSystemEventRepository) GetEvents(ctx context.Context, topic string, fromVersion int64) ([]outbound.Event, error) {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
 
-	// If directory doesn't exist yet, return 0 as the version
-	if _, err := os.Stat(topicDir); os.IsNotExist(err) {
-		fs.logger.Printf("[DEBUG] Topic %s: Topic directory doesn't exist, using version 0", topic)
-		return 0, nil
+	// Check repository state
+	if fs.state != outbound.StateReady {
+		return nil, ErrNotReady
 	}
 
+	// Verify topic exists
+	if _, exists := fs.topicConfigs[topic]; !exists {
+		return nil, ErrTopicNotFound
+	}
+
+	// Get topic directory
+	topicDir := fs.getTopicDir(topic)
+
+	// Check if topic directory exists
+	_, err := os.Stat(topicDir)
+	if os.IsNotExist(err) {
+		return []outbound.Event{}, nil // Return empty slice if directory doesn't exist
+	} else if err != nil {
+		return nil, fmt.Errorf("failed to access topic directory: %w", err)
+	}
+
+	// List files in topic directory
 	entries, err := os.ReadDir(topicDir)
 	if err != nil {
-		fs.logger.Printf("[ERROR] Topic %s: Failed to read topic directory: %v", topic, err)
-		return 0, NewFileIOError(topicDir, err)
+		return nil, fmt.Errorf("failed to read topic directory: %w", err)
 	}
 
-	var latestVersion int64 = 0
-	var parseErrors []string
-	var eventCount int
+	// Process event files
+	var events []outbound.Event
 
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
 
-		// Skip temporary files
-		if strings.HasSuffix(entry.Name(), ".tmp") {
-			fs.logger.Printf("[DEBUG] Topic %s: Skipping temporary file: %s", topic, entry.Name())
+		// Extract version from filename (assuming format vNNNNNNNNNN.json)
+		versionStr := strings.TrimPrefix(strings.TrimSuffix(entry.Name(), ".json"), "v")
+		version, err := strconv.ParseInt(versionStr, 10, 64)
+		if err != nil {
+			// Skip files that don't match expected format
 			continue
 		}
 
-		eventCount++
+		// Skip events with lower version than requested
+		if version < fromVersion {
+			continue
+		}
 
-		// Extract version from filename (format: 00000000000000000001.json)
-		baseName := strings.TrimSuffix(entry.Name(), ".json")
-		version, err := strconv.ParseInt(baseName, 10, 64)
+		// Skip events with exact fromVersion (we want events after the version)
+		if version == fromVersion {
+			continue
+		}
+
+		// Read and parse the event
+		eventPath := filepath.Join(topicDir, entry.Name())
+		data, err := os.ReadFile(eventPath)
 		if err != nil {
-			// Try alternate format: events_1.json
-			if strings.HasPrefix(baseName, "events_") {
-				versionStr := strings.TrimPrefix(baseName, "events_")
-				version, err = strconv.ParseInt(versionStr, 10, 64)
-				if err != nil {
-					// Log but skip files with invalid names
-					parseErrors = append(parseErrors, fmt.Sprintf("%s: %v", entry.Name(), err))
-					fs.logger.Printf("[WARN] Topic %s: Skipping file with invalid name format: %s", topic, entry.Name())
-					continue
-				}
-			} else {
-				// Log but skip files with invalid names
-				parseErrors = append(parseErrors, fmt.Sprintf("%s: %v", entry.Name(), err))
-				fs.logger.Printf("[WARN] Topic %s: Skipping file with invalid name format: %s", topic, entry.Name())
-				continue
-			}
+			fs.logger.Printf("Failed to read event file %s: %v", eventPath, err)
+			continue
+		}
+
+		var event outbound.Event
+		if err := json.Unmarshal(data, &event); err != nil {
+			fs.logger.Printf("Failed to unmarshal event from %s: %v", eventPath, err)
+			continue
+		}
+
+		events = append(events, event)
+	}
+
+	// Sort events by version (may not be needed if filename guarantees order)
+	sort.Slice(events, func(i, j int) bool {
+		return events[i].Version < events[j].Version
+	})
+
+	return events, nil
+}
+
+// GetEventsByType retrieves events of a specific type for a topic
+func (fs *FileSystemEventRepository) GetEventsByType(ctx context.Context, topic string, eventType string, fromVersion int64) ([]outbound.Event, error) {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+
+	// Check repository state
+	if fs.state != outbound.StateReady {
+		return nil, ErrNotReady
+	}
+
+	// Verify topic exists
+	if _, exists := fs.topicConfigs[topic]; !exists {
+		return nil, ErrTopicNotFound
+	}
+
+	// Get topic directory
+	topicDir := fs.getTopicDir(topic)
+
+	// Check if topic directory exists
+	_, err := os.Stat(topicDir)
+	if os.IsNotExist(err) {
+		return []outbound.Event{}, nil // Return empty slice if directory doesn't exist
+	} else if err != nil {
+		return nil, fmt.Errorf("failed to access topic directory: %w", err)
+	}
+
+	// List files in topic directory
+	entries, err := os.ReadDir(topicDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read topic directory: %w", err)
+	}
+
+	// Process event files
+	var events []outbound.Event
+
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+
+		// Extract version from filename (assuming format vNNNNNNNNNN.json)
+		versionStr := strings.TrimPrefix(strings.TrimSuffix(entry.Name(), ".json"), "v")
+		version, err := strconv.ParseInt(versionStr, 10, 64)
+		if err != nil {
+			// Skip files that don't match expected format
+			continue
+		}
+
+		// Skip events with lower version than requested
+		if version < fromVersion {
+			continue
+		}
+
+		// Skip events with exact fromVersion (we want events after the version)
+		if version == fromVersion {
+			continue
+		}
+
+		// Read and parse the event
+		eventPath := filepath.Join(topicDir, entry.Name())
+		data, err := os.ReadFile(eventPath)
+		if err != nil {
+			fs.logger.Printf("Failed to read event file %s: %v", eventPath, err)
+			continue
+		}
+
+		var event outbound.Event
+		if err := json.Unmarshal(data, &event); err != nil {
+			fs.logger.Printf("Failed to unmarshal event from %s: %v", eventPath, err)
+			continue
+		}
+
+		// Only include events of the requested type
+		if event.Type == eventType {
+			events = append(events, event)
+		}
+	}
+
+	// Sort events by version
+	sort.Slice(events, func(i, j int) bool {
+		return events[i].Version < events[j].Version
+	})
+
+	return events, nil
+}
+
+// GetLatestVersion returns the latest event version for a topic
+func (fs *FileSystemEventRepository) GetLatestVersion(ctx context.Context, topic string) (int64, error) {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+
+	// Check repository state
+	if fs.state != outbound.StateReady {
+		return 0, ErrNotReady
+	}
+
+	// Verify topic exists
+	if _, exists := fs.topicConfigs[topic]; !exists {
+		return 0, ErrTopicNotFound
+	}
+
+	// Return cached value
+	return fs.latestVersion[topic], nil
+}
+
+// CreateTopic creates a new topic
+func (fs *FileSystemEventRepository) CreateTopic(ctx context.Context, config outbound.TopicConfig) error {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+
+	// Check repository state
+	if fs.state != outbound.StateReady {
+		return ErrNotReady
+	}
+
+	// Check if topic already exists directly (without calling TopicExists which would try to acquire the same lock)
+	if _, exists := fs.topicConfigs[config.Name]; exists {
+		return ErrTopicAlreadyExists
+	}
+
+	// Ensure topic directory exists
+	topicDir := fs.getTopicDir(config.Name)
+	if err := os.MkdirAll(topicDir, 0755); err != nil {
+		return fmt.Errorf("failed to create topic directory: %w", err)
+	}
+
+	// Marshal configuration
+	data, err := json.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("failed to marshal topic config: %w", err)
+	}
+
+	// Write configuration to file
+	configPath := fs.getTopicConfigPath(config.Name)
+
+	// Write to temporary file first
+	tempPath := configPath + ".tmp"
+	if err := os.WriteFile(tempPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write topic config: %w", err)
+	}
+
+	// Rename for atomic update
+	if err := os.Rename(tempPath, configPath); err != nil {
+		os.Remove(tempPath) // Clean up temp file
+		return fmt.Errorf("failed to finalize topic config: %w", err)
+	}
+
+	// Update in-memory state
+	fs.topicConfigs[config.Name] = config
+	fs.latestVersion[config.Name] = 0
+
+	return nil
+}
+
+// DeleteTopic deletes a topic
+func (fs *FileSystemEventRepository) DeleteTopic(ctx context.Context, topic string) error {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+
+	// Check repository state
+	if fs.state != outbound.StateReady {
+		return ErrNotReady
+	}
+
+	// Verify topic exists
+	if _, exists := fs.topicConfigs[topic]; !exists {
+		return NewTopicNotFoundError(topic)
+	}
+
+	// Delete topic directory
+	topicDir := fs.getTopicDir(topic)
+	if err := os.RemoveAll(topicDir); err != nil {
+		return fmt.Errorf("failed to delete topic directory: %w", err)
+	}
+
+	// Delete configuration file
+	configPath := fs.getTopicConfigPath(topic)
+	if err := os.Remove(configPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to delete topic config: %w", err)
+	}
+
+	// Update in-memory state
+	delete(fs.topicConfigs, topic)
+	delete(fs.latestVersion, topic)
+
+	return nil
+}
+
+// ListTopics returns a list of all topics
+func (fs *FileSystemEventRepository) ListTopics(ctx context.Context) ([]outbound.TopicConfig, error) {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+
+	// Check repository state
+	if fs.state != outbound.StateReady {
+		return nil, ErrNotReady
+	}
+
+	// Convert map to slice
+	topics := make([]outbound.TopicConfig, 0, len(fs.topicConfigs))
+	for _, config := range fs.topicConfigs {
+		topics = append(topics, config)
+	}
+
+	return topics, nil
+}
+
+// TopicExists checks if a topic exists
+func (fs *FileSystemEventRepository) TopicExists(ctx context.Context, topic string) (bool, error) {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+
+	// Check repository state
+	if fs.state != outbound.StateReady {
+		return false, ErrNotReady
+	}
+
+	_, exists := fs.topicConfigs[topic]
+	return exists, nil
+}
+
+// UpdateTopicConfig updates a topic's configuration
+func (fs *FileSystemEventRepository) UpdateTopicConfig(ctx context.Context, config outbound.TopicConfig) error {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+
+	// Check repository state
+	if fs.state != outbound.StateReady {
+		return ErrNotReady
+	}
+
+	// Verify topic exists
+	if _, exists := fs.topicConfigs[config.Name]; !exists {
+		return ErrTopicNotFound
+	}
+
+	// Marshal updated configuration
+	data, err := json.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("failed to marshal topic config: %w", err)
+	}
+
+	// Write to configuration file
+	configPath := fs.getTopicConfigPath(config.Name)
+
+	// Write to temporary file first
+	tempPath := configPath + ".tmp"
+	if err := os.WriteFile(tempPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write topic config: %w", err)
+	}
+
+	// Rename for atomic update
+	if err := os.Rename(tempPath, configPath); err != nil {
+		os.Remove(tempPath) // Clean up temp file
+		return fmt.Errorf("failed to finalize topic config: %w", err)
+	}
+
+	// Update in-memory state
+	fs.topicConfigs[config.Name] = config
+
+	return nil
+}
+
+// GetTopicConfig gets a topic's configuration
+func (fs *FileSystemEventRepository) GetTopicConfig(ctx context.Context, topic string) (outbound.TopicConfig, error) {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+
+	// Check repository state
+	if fs.state != outbound.StateReady {
+		return outbound.TopicConfig{}, ErrNotReady
+	}
+
+	// Verify topic exists
+	config, exists := fs.topicConfigs[topic]
+	if !exists {
+		return outbound.TopicConfig{}, ErrTopicNotFound
+	}
+
+	return config, nil
+}
+
+// Helper methods
+
+// ensureBaseDir ensures the base directory exists
+func (fs *FileSystemEventRepository) ensureBaseDir() error {
+	if err := os.MkdirAll(fs.basePath, 0755); err != nil {
+		return fmt.Errorf("failed to create base directory: %w", err)
+	}
+	return nil
+}
+
+// getTopicDir returns the path to a topic's events directory
+func (fs *FileSystemEventRepository) getTopicDir(topic string) string {
+	return filepath.Join(fs.basePath, "events", topic)
+}
+
+// loadTopicConfig loads a topic's configuration from disk
+func (fs *FileSystemEventRepository) loadTopicConfig(topic string) (outbound.TopicConfig, error) {
+	configPath := fs.getTopicConfigPath(topic)
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return outbound.TopicConfig{}, fmt.Errorf("failed to read topic config: %w", err)
+	}
+
+	var config outbound.TopicConfig
+	if err := json.Unmarshal(data, &config); err != nil {
+		return outbound.TopicConfig{}, fmt.Errorf("failed to unmarshal topic config: %w", err)
+	}
+
+	return config, nil
+}
+
+// getTopicConfigPath returns the path to a topic's configuration file
+func (fs *FileSystemEventRepository) getTopicConfigPath(topic string) string {
+	return filepath.Join(fs.basePath, "configs", topic+".json")
+}
+
+// determineLatestVersion finds the latest event version for a topic by scanning the directory
+func (fs *FileSystemEventRepository) determineLatestVersion(topic string) (int64, error) {
+	topicDir := fs.getTopicDir(topic)
+
+	// Ensure topic directory exists
+	_, err := os.Stat(topicDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// If directory doesn't exist, latest version is 0
+			return 0, nil
+		}
+		return 0, fmt.Errorf("failed to access topic directory: %w", err)
+	}
+
+	// List files in topic directory
+	entries, err := os.ReadDir(topicDir)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read topic directory: %w", err)
+	}
+
+	// Find highest version
+	var latestVersion int64
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+
+		// Extract version from filename (assuming format vNNNNNNNNNN.json)
+		versionStr := strings.TrimPrefix(strings.TrimSuffix(entry.Name(), ".json"), "v")
+		version, err := strconv.ParseInt(versionStr, 10, 64)
+		if err != nil {
+			// Skip files that don't match expected format
+			continue
 		}
 
 		if version > latestVersion {
@@ -262,485 +737,167 @@ func (fs *FileSystemEventRepository) determineLatestVersion(topic string) (int64
 		}
 	}
 
-	// If we encountered parse errors but still found valid events, log the errors but don't fail
-	if len(parseErrors) > 0 {
-		fs.logger.Printf("[WARN] Topic %s: Failed to parse %d event filenames: %s",
-			topic, len(parseErrors), strings.Join(parseErrors, "; "))
-	}
-
-	fs.logger.Printf("[INFO] Topic %s: Found %d event files, latest version is %d", topic, eventCount, latestVersion)
 	return latestVersion, nil
 }
 
-// ensureDirStructure creates the base directory structure if it doesn't exist
-func (fs *FileSystemEventRepository) ensureDirStructure() error {
-	fs.logger.Printf("[DEBUG] Ensuring directory structure at %s", fs.basePath)
+// Health returns health information about the file system repository
+func (fs *FileSystemEventRepository) Health(ctx context.Context) (map[string]interface{}, error) {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
 
-	// Create base directory
-	if err := fs.ensureBaseDir(); err != nil {
-		return err
+	// Create a base health report
+	health := map[string]interface{}{
+		"status":     string(outbound.StatusUp),
+		"state":      string(fs.state),
+		"type":       "filesystem",
+		"basePath":   fs.basePath,
+		"topicCount": len(fs.topicConfigs),
 	}
 
-	// Create configs directory
-	if err := fs.ensureConfigsDir(); err != nil {
-		return err
+	// If not in ready state, mark as down
+	if fs.state != outbound.StateReady {
+		health["status"] = string(outbound.StatusDown)
+		health["message"] = "Repository is not in ready state"
+		return health, fmt.Errorf("repository not in ready state: %s", fs.state)
 	}
 
-	// Create events directory
-	if err := fs.ensureEventsDir(); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// ensureTopicDir ensures the topic directory exists
-func (fs *FileSystemEventRepository) ensureTopicDir(topic string) error {
-	topicDir := fs.getTopicDir(topic)
-	fs.logger.Printf("[DEBUG] Ensuring topic directory exists: %s", topicDir)
-
-	if err := os.MkdirAll(topicDir, 0755); err != nil {
-		fs.logger.Printf("[ERROR] Failed to create topic directory: %v", err)
-		return NewFileIOError(topicDir, err)
-	}
-	return nil
-}
-
-// getTopicsDir returns the path to the topics directory
-func (fs *FileSystemEventRepository) getTopicsDir() string {
-	// Use the events directory to store topics
-	return fs.getEventsDir()
-}
-
-// getTopicDir returns the path to a specific topic directory
-func (fs *FileSystemEventRepository) getTopicDir(topic string) string {
-	return filepath.Join(fs.getTopicsDir(), topic)
-}
-
-// loadTopicConfig loads the configuration for a specific topic
-func (fs *FileSystemEventRepository) loadTopicConfig(topic string) (outbound.TopicConfig, error) {
-	configPath := fs.getTopicConfigPath(topic)
-	fs.logger.Printf("[DEBUG] Loading topic config from %s", configPath)
-
-	data, err := os.ReadFile(configPath)
+	// Check if the base directory exists and is accessible
+	_, err := os.Stat(fs.basePath)
 	if err != nil {
-		fs.logger.Printf("[ERROR] Failed to read topic configuration: %v", err)
-		return outbound.TopicConfig{}, NewFileIOError(configPath, err)
+		health["status"] = string(outbound.StatusDown)
+		health["error"] = fmt.Sprintf("base directory error: %v", err)
+		return health, fmt.Errorf("base directory error: %w", err)
 	}
 
-	var config outbound.TopicConfig
-	if err := json.Unmarshal(data, &config); err != nil {
-		fs.logger.Printf("[ERROR] Failed to unmarshal topic configuration: %v", err)
-		return outbound.TopicConfig{}, fmt.Errorf("failed to unmarshal topic configuration: %w", err)
-	}
+	// Add information about each topic
+	topicStats := make(map[string]interface{})
+	for topic := range fs.topicConfigs {
+		topicPath := fs.getTopicDir(topic)
 
-	fs.logger.Printf("[DEBUG] Successfully loaded topic configuration for %s", topic)
-	return config, nil
-}
-
-// getTopicConfigPath returns the path to the configuration file for a specific topic
-func (fs *FileSystemEventRepository) getTopicConfigPath(topic string) string {
-	// Check in the dedicated configs directory
-	return filepath.Join(fs.getConfigDir(), topic+".json")
-}
-
-// CreateTopic creates a new topic
-func (fs *FileSystemEventRepository) CreateTopic(ctx context.Context, config outbound.TopicConfig) error {
-	fs.logger.Printf("[DEBUG] Creating topic: %s", config.Name)
-	fs.mu.Lock()
-	defer fs.mu.Unlock()
-
-	name := config.Name
-
-	// Verify topic doesn't already exist
-	if _, exists := fs.topicConfigs[name]; exists {
-		fs.logger.Printf("[ERROR] Topic %s already exists", name)
-		return NewTopicAlreadyExistsError(name)
-	}
-
-	// Ensure base directories exist
-	if err := fs.ensureDirStructure(); err != nil {
-		fs.logger.Printf("[ERROR] Failed to ensure directory structure: %v", err)
-		return err
-	}
-
-	// Ensure topic directory exists
-	topicDir := fs.getTopicDir(name)
-	if err := os.MkdirAll(topicDir, 0755); err != nil {
-		fs.logger.Printf("[ERROR] Failed to create topic directory: %v", err)
-		return NewFileIOError(topicDir, err)
-	}
-
-	// Write topic configuration to configs directory
-	configPath := filepath.Join(fs.getConfigDir(), name+".json")
-	configData, err := json.Marshal(config)
-	if err != nil {
-		fs.logger.Printf("[ERROR] Failed to marshal topic configuration: %v", err)
-		return fmt.Errorf("failed to marshal topic configuration: %w", err)
-	}
-
-	if err := os.WriteFile(configPath, configData, 0644); err != nil {
-		fs.logger.Printf("[ERROR] Failed to write topic configuration: %v", err)
-		return NewFileIOError(configPath, err)
-	}
-
-	// Store in memory
-	fs.topicConfigs[name] = config
-	fs.latestVersion[name] = 0 // Initialize version to 0
-
-	fs.logger.Printf("[INFO] Topic %s created successfully", name)
-	return nil
-}
-
-// DeleteTopic deletes a topic and all its events
-func (fs *FileSystemEventRepository) DeleteTopic(ctx context.Context, topic string) error {
-	fs.logger.Printf("[DEBUG] Deleting topic: %s", topic)
-	fs.mu.Lock()
-	defer fs.mu.Unlock()
-
-	// Verify topic exists
-	if _, exists := fs.topicConfigs[topic]; !exists {
-		fs.logger.Printf("[ERROR] Topic %s not found", topic)
-		return NewTopicNotFoundError(topic)
-	}
-
-	// Delete topic directory with all event files
-	topicDir := fs.getTopicDir(topic)
-	if _, err := os.Stat(topicDir); !os.IsNotExist(err) {
-		if err := os.RemoveAll(topicDir); err != nil {
-			fs.logger.Printf("[ERROR] Failed to remove topic directory: %v", err)
-			return NewFileIOError(topicDir, err)
-		}
-	}
-
-	// Delete topic configuration file
-	configPath := filepath.Join(fs.getConfigDir(), topic+".json")
-	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
-		if err := os.Remove(configPath); err != nil {
-			fs.logger.Printf("[ERROR] Failed to remove topic configuration file: %v", err)
-			return NewFileIOError(configPath, err)
-		}
-	}
-
-	// Remove from in-memory maps
-	delete(fs.topicConfigs, topic)
-	delete(fs.latestVersion, topic)
-
-	fs.logger.Printf("[INFO] Topic %s deleted successfully", topic)
-	return nil
-}
-
-// ListTopics returns a list of all topics
-func (fs *FileSystemEventRepository) ListTopics(ctx context.Context) ([]outbound.TopicConfig, error) {
-	fs.logger.Printf("[DEBUG] Listing all topics")
-	fs.mu.RLock()
-	defer fs.mu.RUnlock()
-
-	topics := make([]outbound.TopicConfig, 0, len(fs.topicConfigs))
-	for _, config := range fs.topicConfigs {
-		topics = append(topics, config)
-	}
-
-	fs.logger.Printf("[INFO] Found %d topics", len(topics))
-	return topics, nil
-}
-
-// TopicExists checks if a topic exists
-func (fs *FileSystemEventRepository) TopicExists(ctx context.Context, topic string) (bool, error) {
-	fs.logger.Printf("[DEBUG] Checking if topic exists: %s", topic)
-	fs.mu.RLock()
-	defer fs.mu.RUnlock()
-
-	_, exists := fs.topicConfigs[topic]
-	fs.logger.Printf("[DEBUG] Topic %s exists: %v", topic, exists)
-	return exists, nil
-}
-
-// GetLatestVersion returns the latest version of a topic
-func (fs *FileSystemEventRepository) GetLatestVersion(ctx context.Context, topic string) (int64, error) {
-	fs.mu.RLock()
-	defer fs.mu.RUnlock()
-
-	// Check if topic exists
-	if _, exists := fs.topicConfigs[topic]; !exists {
-		fs.logger.Printf("[ERROR] Topic %s not found", topic)
-		return 0, NewTopicNotFoundError(topic)
-	}
-
-	// Get the latest version from memory
-	latestVersion, exists := fs.latestVersion[topic]
-	if !exists {
-		// If not found in memory (should not happen), determine it from files
-		fs.logger.Printf("[WARN] Version for topic %s not in memory, determining from files", topic)
-		var err error
-		latestVersion, err = fs.determineLatestVersion(topic)
+		// Check if topic directory exists
+		_, err := os.Stat(topicPath)
 		if err != nil {
-			fs.logger.Printf("[ERROR] Failed to determine latest version: %v", err)
-			return 0, err
-		}
-	}
-
-	fs.logger.Printf("[DEBUG] Latest version for topic %s: %d", topic, latestVersion)
-	return latestVersion, nil
-}
-
-// UpdateTopicConfig updates a topic's configuration
-func (fs *FileSystemEventRepository) UpdateTopicConfig(ctx context.Context, config outbound.TopicConfig) error {
-	fs.logger.Printf("[DEBUG] Updating topic configuration for: %s", config.Name)
-	fs.mu.Lock()
-	defer fs.mu.Unlock()
-
-	// Verify topic exists
-	if _, exists := fs.topicConfigs[config.Name]; !exists {
-		fs.logger.Printf("[ERROR] Topic %s not found", config.Name)
-		return NewTopicNotFoundError(config.Name)
-	}
-
-	// Marshal updated configuration
-	data, err := json.Marshal(config)
-	if err != nil {
-		fs.logger.Printf("[ERROR] Failed to marshal topic config: %v", err)
-		return fmt.Errorf("failed to marshal topic config: %w", err)
-	}
-
-	// Write to temporary file first
-	configPath := filepath.Join(fs.getConfigDir(), config.Name+".json")
-	tempPath := configPath + ".tmp"
-
-	if err := os.WriteFile(tempPath, data, 0644); err != nil {
-		fs.logger.Printf("[ERROR] Failed to write temporary topic config file: %v", err)
-		return NewFileIOError(tempPath, err)
-	}
-
-	// Rename for atomic update
-	if err := os.Rename(tempPath, configPath); err != nil {
-		// Try to clean up temp file
-		os.Remove(tempPath)
-		fs.logger.Printf("[ERROR] Failed to update topic config file: %v", err)
-		return NewFileIOError(configPath, err)
-	}
-
-	// Update in-memory state
-	fs.topicConfigs[config.Name] = config
-	fs.logger.Printf("[INFO] Topic %s configuration updated successfully", config.Name)
-
-	return nil
-}
-
-// GetTopicConfig gets a topic's configuration
-func (fs *FileSystemEventRepository) GetTopicConfig(ctx context.Context, topic string) (outbound.TopicConfig, error) {
-	fs.logger.Printf("[DEBUG] Getting configuration for topic: %s", topic)
-	fs.mu.RLock()
-	defer fs.mu.RUnlock()
-
-	// Verify topic exists
-	config, exists := fs.topicConfigs[topic]
-	if !exists {
-		fs.logger.Printf("[ERROR] Topic %s not found", topic)
-		return outbound.TopicConfig{}, NewTopicNotFoundError(topic)
-	}
-
-	fs.logger.Printf("[DEBUG] Successfully retrieved configuration for topic: %s", topic)
-	return config, nil
-}
-
-// GetEvents retrieves events for a topic, starting from versions strictly greater than fromVersion
-func (fs *FileSystemEventRepository) GetEvents(ctx context.Context, topic string, fromVersion int64) ([]outbound.Event, error) {
-	fs.mu.RLock()
-	defer fs.mu.RUnlock()
-
-	fs.logger.Printf("[DEBUG] Topic %s: Getting events with version > %d", topic, fromVersion)
-
-	// Verify topic exists
-	if _, exists := fs.topicConfigs[topic]; !exists {
-		fs.logger.Printf("[ERROR] Topic %s not found", topic)
-		return nil, NewTopicNotFoundError(topic)
-	}
-
-	topicDir := fs.getTopicDir(topic)
-
-	// Check if topic directory exists
-	if _, err := os.Stat(topicDir); os.IsNotExist(err) {
-		// If the directory doesn't exist, return empty slice
-		fs.logger.Printf("[WARN] Topic %s: Topic directory doesn't exist", topic)
-		return []outbound.Event{}, nil
-	}
-
-	// Create a pattern for matching files with versions > fromVersion
-	// Generate the filename pattern based on fromVersion
-	var filePattern string
-
-	// For pattern matching, we'll use the next version after fromVersion
-	// since fromVersion itself should be excluded
-	nextVersion := fromVersion + 1
-
-	if nextVersion > 1 {
-		// Create a pattern that matches all files with version >= nextVersion
-		// The pattern needs to account for 20-digit padding
-		paddedVersion := fmt.Sprintf("%020d", nextVersion)
-
-		// All files with same first digits but last digit >= the nextVersion's digit
-		filePattern = fmt.Sprintf("%s*.json", paddedVersion[:len(paddedVersion)-1])
-	} else {
-		// If nextVersion is 0 or 1, match all JSON files (since all versions start at 1)
-		filePattern = "*.json"
-	}
-
-	fs.logger.Printf("[DEBUG] Topic %s: Using file pattern: %s", topic, filePattern)
-
-	// Use filepath.Glob to find matching files
-	matchingPaths, err := filepath.Glob(filepath.Join(topicDir, filePattern))
-	if err != nil {
-		fs.logger.Printf("[ERROR] Topic %s: Failed to find matching event files: %v", topic, err)
-		return nil, NewFileIOError(topicDir, err)
-	}
-
-	fs.logger.Printf("[DEBUG] Topic %s: Found %d potentially matching files", topic, len(matchingPaths))
-
-	var events []outbound.Event
-
-	// Process each matching file
-	for _, path := range matchingPaths {
-		// Get just the filename
-		filename := filepath.Base(path)
-
-		// Skip temporary files
-		if strings.HasSuffix(filename, ".tmp") {
-			fs.logger.Printf("[DEBUG] Topic %s: Skipping temporary file: %s", topic, filename)
+			topicStats[topic] = map[string]interface{}{
+				"status": "error",
+				"error":  fmt.Sprintf("directory error: %v", err),
+			}
 			continue
 		}
 
-		// Extract version from filename (format: 00000000000000000001.json)
-		baseName := strings.TrimSuffix(filename, ".json")
-		version, err := strconv.ParseInt(baseName, 10, 64)
-		if err != nil {
-			// Try alternate format: events_1.json
-			if strings.HasPrefix(baseName, "events_") {
-				versionStr := strings.TrimPrefix(baseName, "events_")
-				version, err = strconv.ParseInt(versionStr, 10, 64)
-				if err != nil {
-					// Log but skip files with invalid names
-					fs.logger.Printf("[WARN] Topic %s: Skipping file with invalid name format: %s", topic, filename)
-					continue
-				}
-			} else {
-				// Log but skip files with invalid names
-				fs.logger.Printf("[WARN] Topic %s: Skipping file with invalid name format: %s", topic, filename)
-				continue
-			}
+		// Get the latest version
+		latestVersion, exists := fs.latestVersion[topic]
+		if !exists {
+			latestVersion = 0
 		}
 
-		// Ensure version is > fromVersion (not just >=)
-		if version <= fromVersion {
-			fs.logger.Printf("[DEBUG] Topic %s: Skipping event with version %d (not > %d)", topic, version, fromVersion)
+		topicStats[topic] = map[string]interface{}{
+			"status": "up",
+			"path":   topicPath,
+			"latest": latestVersion,
+		}
+	}
+
+	health["topics"] = topicStats
+
+	return health, nil
+}
+
+// HealthInfo returns structured health information
+func (fs *FileSystemEventRepository) HealthInfo(ctx context.Context) (outbound.HealthInfo, error) {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+
+	// Default to up status
+	status := outbound.StatusUp
+	var message string
+	var errorMsg string
+
+	// Check state
+	if fs.state != outbound.StateReady {
+		status = outbound.StatusDown
+		message = fmt.Sprintf("Repository is not in ready state: %s", fs.state)
+		return outbound.HealthInfo{
+			Status:  status,
+			State:   fs.state,
+			Message: message,
+			AdditionalInfo: map[string]interface{}{
+				"type":       "filesystem",
+				"basePath":   fs.basePath,
+				"topicCount": 0,
+			},
+		}, nil
+	}
+
+	// Check if the base directory exists and is accessible
+	_, err := os.Stat(fs.basePath)
+	if err != nil {
+		status = outbound.StatusDown
+		errorMsg = fmt.Sprintf("Base directory error: %v", err)
+		return outbound.HealthInfo{
+			Status: status,
+			State:  fs.state,
+			Error:  errorMsg,
+			AdditionalInfo: map[string]interface{}{
+				"type":       "filesystem",
+				"basePath":   fs.basePath,
+				"topicCount": 0,
+			},
+		}, err
+	}
+
+	// Prepare additional info
+	additionalInfo := map[string]interface{}{
+		"type":       "filesystem",
+		"basePath":   fs.basePath,
+		"topicCount": len(fs.topicConfigs),
+	}
+
+	// Add information about each topic
+	topicStats := make(map[string]interface{})
+	topicErrorCount := 0
+
+	for topic := range fs.topicConfigs {
+		topicPath := fs.getTopicDir(topic)
+
+		// Check if topic directory exists
+		_, err := os.Stat(topicPath)
+		if err != nil {
+			topicStats[topic] = map[string]interface{}{
+				"status": "error",
+				"error":  fmt.Sprintf("directory error: %v", err),
+			}
+			topicErrorCount++
 			continue
 		}
 
-		// Read and unmarshal event
-		data, err := os.ReadFile(path)
-		if err != nil {
-			fs.logger.Printf("[WARN] Topic %s: Failed to read event file %s: %v", topic, path, err)
-			return nil, NewFileIOError(path, err)
+		// Get the latest version
+		latestVersion, exists := fs.latestVersion[topic]
+		if !exists {
+			latestVersion = 0
 		}
 
-		// Check if this is an array of events or a single event
-		var fileContent = strings.TrimSpace(string(data))
-		if strings.HasPrefix(fileContent, "[") {
-			// This is an array of events
-			var eventArray []outbound.Event
-			if err := json.Unmarshal(data, &eventArray); err != nil {
-				fs.logger.Printf("[WARN] Topic %s: Failed to parse event array in file %s: %v", topic, path, err)
-				return nil, fmt.Errorf("%w: %v", ErrInvalidEventData, err)
-			}
-			events = append(events, eventArray...)
-			fs.logger.Printf("[DEBUG] Topic %s: Added %d events from file %s", topic, len(eventArray), filename)
-		} else {
-			// This is a single event
-			var event outbound.Event
-			if err := json.Unmarshal(data, &event); err != nil {
-				fs.logger.Printf("[WARN] Topic %s: Failed to parse event file %s: %v", topic, path, err)
-				return nil, fmt.Errorf("%w: %v", ErrInvalidEventData, err)
-			}
-			events = append(events, event)
-			fs.logger.Printf("[DEBUG] Topic %s: Added event with version %d", topic, event.Version)
+		topicStats[topic] = map[string]interface{}{
+			"status": "up",
+			"path":   topicPath,
+			"latest": latestVersion,
 		}
 	}
 
-	// Sort events by version to ensure consistent ordering
-	sort.Slice(events, func(i, j int) bool {
-		return events[i].Version < events[j].Version
-	})
+	additionalInfo["topics"] = topicStats
 
-	fs.logger.Printf("[INFO] Topic %s: Retrieved %d events with version > %d", topic, len(events), fromVersion)
-	return events, nil
-}
-
-// GetEventsByType retrieves events of a specific type for a topic, starting from versions strictly greater than fromVersion
-func (fs *FileSystemEventRepository) GetEventsByType(ctx context.Context, topic string, eventType string, fromVersion int64) ([]outbound.Event, error) {
-	fs.logger.Printf("[DEBUG] Topic %s: Getting events of type %s with version > %d", topic, eventType, fromVersion)
-
-	// Get all events (with version > fromVersion)
-	allEvents, err := fs.GetEvents(ctx, topic, fromVersion)
-	if err != nil {
-		return nil, err
+	// If some topics have errors, mark as degraded
+	if topicErrorCount > 0 && topicErrorCount < len(fs.topicConfigs) {
+		status = outbound.StatusDegraded
+		message = fmt.Sprintf("%d of %d topics have errors", topicErrorCount, len(fs.topicConfigs))
+	} else if topicErrorCount == len(fs.topicConfigs) && len(fs.topicConfigs) > 0 {
+		status = outbound.StatusDown
+		message = "All topics have errors"
 	}
 
-	if len(allEvents) == 0 {
-		fs.logger.Printf("[DEBUG] Topic %s: No events found with version > %d", topic, fromVersion)
-		return allEvents, nil
-	}
-
-	// Filter events by type
-	var filteredEvents []outbound.Event
-	for _, event := range allEvents {
-		if event.Type == eventType {
-			filteredEvents = append(filteredEvents, event)
-		}
-	}
-
-	fs.logger.Printf("[INFO] Topic %s: Found %d events of type %s with version > %d",
-		topic, len(filteredEvents), eventType, fromVersion)
-	return filteredEvents, nil
-}
-
-// ensureBaseDir creates the base directory if it doesn't exist
-func (fs *FileSystemEventRepository) ensureBaseDir() error {
-	fs.logger.Printf("[DEBUG] Ensuring base directory exists: %s", fs.basePath)
-	if err := os.MkdirAll(fs.basePath, 0755); err != nil {
-		fs.logger.Printf("[ERROR] Failed to create base directory: %v", err)
-		return NewFileIOError(fs.basePath, err)
-	}
-	return nil
-}
-
-// ensureConfigsDir creates the configs directory if it doesn't exist
-func (fs *FileSystemEventRepository) ensureConfigsDir() error {
-	configDir := fs.getConfigDir()
-	fs.logger.Printf("[DEBUG] Ensuring configs directory exists: %s", configDir)
-	if err := os.MkdirAll(configDir, 0755); err != nil {
-		fs.logger.Printf("[ERROR] Failed to create configs directory: %v", err)
-		return NewFileIOError(configDir, err)
-	}
-	return nil
-}
-
-// ensureEventsDir creates the events directory if it doesn't exist
-func (fs *FileSystemEventRepository) ensureEventsDir() error {
-	eventsDir := fs.getEventsDir()
-	fs.logger.Printf("[DEBUG] Ensuring events directory exists: %s", eventsDir)
-	if err := os.MkdirAll(eventsDir, 0755); err != nil {
-		fs.logger.Printf("[ERROR] Failed to create events directory: %v", err)
-		return NewFileIOError(eventsDir, err)
-	}
-	return nil
-}
-
-// getConfigDir returns the path to the configs directory
-func (fs *FileSystemEventRepository) getConfigDir() string {
-	return filepath.Join(fs.basePath, "configs")
-}
-
-// getEventsDir returns the path to the events directory
-func (fs *FileSystemEventRepository) getEventsDir() string {
-	return filepath.Join(fs.basePath, "events")
+	return outbound.HealthInfo{
+		Status:         status,
+		State:          fs.state,
+		Message:        message,
+		AdditionalInfo: additionalInfo,
+	}, nil
 }

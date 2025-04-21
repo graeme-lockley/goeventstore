@@ -12,8 +12,14 @@ func TestMemoryEventRepository_BasicOperations(t *testing.T) {
 	repo := NewMemoryEventRepository()
 	ctx := context.Background()
 
+	// Initialize the repository
+	err := repo.Initialize(ctx)
+	if err != nil {
+		t.Fatalf("Failed to initialize repository: %v", err)
+	}
+
 	// Test topic creation
-	err := repo.CreateTopic(ctx, outbound.TopicConfig{
+	err = repo.CreateTopic(ctx, outbound.TopicConfig{
 		Name:    "test-topic",
 		Options: map[string]string{"description": "Test Topic"},
 	})
@@ -74,8 +80,14 @@ func TestMemoryEventRepository_EventOperations(t *testing.T) {
 	repo := NewMemoryEventRepository()
 	ctx := context.Background()
 
+	// Initialize the repository
+	err := repo.Initialize(ctx)
+	if err != nil {
+		t.Fatalf("Failed to initialize repository: %v", err)
+	}
+
 	// Create topic
-	err := repo.CreateTopic(ctx, outbound.TopicConfig{
+	err = repo.CreateTopic(ctx, outbound.TopicConfig{
 		Name: "event-topic",
 	})
 	if err != nil {
@@ -152,8 +164,14 @@ func TestMemoryEventRepository_ErrorCases(t *testing.T) {
 	repo := NewMemoryEventRepository()
 	ctx := context.Background()
 
+	// Initialize the repository
+	err := repo.Initialize(ctx)
+	if err != nil {
+		t.Fatalf("Failed to initialize repository: %v", err)
+	}
+
 	// Test operations on non-existent topic
-	_, err := repo.GetEvents(ctx, "non-existent", 0)
+	_, err = repo.GetEvents(ctx, "non-existent", 0)
 	if err == nil {
 		t.Fatal("Expected error for GetEvents on non-existent topic, got nil")
 	}
@@ -189,8 +207,14 @@ func TestMemoryEventRepository_EventProperties(t *testing.T) {
 	repo := NewMemoryEventRepository()
 	ctx := context.Background()
 
+	// Initialize the repository
+	err := repo.Initialize(ctx)
+	if err != nil {
+		t.Fatalf("Failed to initialize repository: %v", err)
+	}
+
 	// Create topic
-	err := repo.CreateTopic(ctx, outbound.TopicConfig{Name: "prop-topic"})
+	err = repo.CreateTopic(ctx, outbound.TopicConfig{Name: "prop-topic"})
 	if err != nil {
 		t.Fatalf("Failed to create topic: %v", err)
 	}
@@ -264,8 +288,14 @@ func TestMemoryEventRepository_DeleteTopic(t *testing.T) {
 	repo := NewMemoryEventRepository()
 	ctx := context.Background()
 
-	// Create topic
-	err := repo.CreateTopic(ctx, outbound.TopicConfig{Name: "delete-topic"})
+	// Initialize the repository
+	err := repo.Initialize(ctx)
+	if err != nil {
+		t.Fatalf("Failed to initialize repository: %v", err)
+	}
+
+	// Create topics
+	err = repo.CreateTopic(ctx, outbound.TopicConfig{Name: "topic-to-delete"})
 	if err != nil {
 		t.Fatalf("Failed to create topic: %v", err)
 	}
@@ -274,19 +304,19 @@ func TestMemoryEventRepository_DeleteTopic(t *testing.T) {
 	events := []outbound.Event{
 		{Type: "test-event", Data: map[string]interface{}{}},
 	}
-	err = repo.AppendEvents(ctx, "delete-topic", events)
+	err = repo.AppendEvents(ctx, "topic-to-delete", events)
 	if err != nil {
 		t.Fatalf("Failed to append events: %v", err)
 	}
 
 	// Delete topic
-	err = repo.DeleteTopic(ctx, "delete-topic")
+	err = repo.DeleteTopic(ctx, "topic-to-delete")
 	if err != nil {
 		t.Fatalf("Failed to delete topic: %v", err)
 	}
 
 	// Verify topic no longer exists
-	exists, err := repo.TopicExists(ctx, "delete-topic")
+	exists, err := repo.TopicExists(ctx, "topic-to-delete")
 	if err != nil {
 		t.Fatalf("Failed to check if topic exists: %v", err)
 	}
@@ -295,7 +325,7 @@ func TestMemoryEventRepository_DeleteTopic(t *testing.T) {
 	}
 
 	// Verify operations on deleted topic fail
-	_, err = repo.GetEvents(ctx, "delete-topic", 0)
+	_, err = repo.GetEvents(ctx, "topic-to-delete", 0)
 	if err == nil {
 		t.Fatal("Expected error for GetEvents on deleted topic, got nil")
 	}
@@ -305,8 +335,14 @@ func TestMemoryEventRepository_Health(t *testing.T) {
 	repo := NewMemoryEventRepository()
 	ctx := context.Background()
 
+	// Initialize the repository
+	err := repo.Initialize(ctx)
+	if err != nil {
+		t.Fatalf("Failed to initialize repository: %v", err)
+	}
+
 	// Create topic
-	err := repo.CreateTopic(ctx, outbound.TopicConfig{Name: "health-topic"})
+	err = repo.CreateTopic(ctx, outbound.TopicConfig{Name: "health-topic"})
 	if err != nil {
 		t.Fatalf("Failed to create topic: %v", err)
 	}

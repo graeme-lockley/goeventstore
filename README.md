@@ -1,154 +1,177 @@
-# Go Event Source
+# GoEventSource API
 
-A modular, pluggable Event Store implementation in Go, following clean architecture, CQRS, and event sourcing principles.
+A RESTful API for event sourcing built with Go, using the standard library's net/http package and the new ServeMux introduced in Go 1.22.
 
 ## Overview
 
-Go Event Source is a flexible event storage system that allows you to:
+The GoEventSource API provides a flexible and robust way to interact with an event-sourced system through HTTP endpoints. It exposes functionality for:
 
-- Store and retrieve events using different storage backends
-- Create and manage event topics at runtime
-- Subscribe to events using transient callbacks
-- Support multiple persistence strategies (memory, file system, PostgreSQL, Azure Blob)
+- Managing topics (streams of events)
+- Appending events to topics
+- Retrieving events from topics
+- Checking system health
 
-The system is built with a hexagonal architecture, separating core domain logic from external adapters.
+## API Endpoints
 
-## Quick Start
+### Base Endpoints
 
-### Running Locally
+- `GET /`: A simple hello world endpoint
+- `GET /health`: Basic API health check
 
-1. Clone the repository:
-   ```sh
-   git clone https://github.com/yourusername/goeventsource.git
-   cd goeventsource
-   ```
+### EventStore Endpoints
 
-2. Build and run:
-   ```sh
-   go build -o bin/api ./cmd/api
-   ./bin/api
-   ```
+#### Health
 
-3. Access the API:
-   - Hello World endpoint: http://localhost:8080/
-   - Health check: http://localhost:8080/health
+- `GET /api/eventstore/health`: Detailed health information about the EventStore
 
-### Running with Docker
+#### Topic Management
 
-1. Using Docker Compose:
-   ```sh
-   cd infra/docker
-   docker-compose up
-   ```
+- `GET /api/topics`: List all topics
+- `POST /api/topics`: Create a new topic
+- `GET /api/topics/{topicName}`: Get details of a specific topic
+- `DELETE /api/topics/{topicName}`: Delete a topic
 
-2. For development with hot-reload:
-   ```sh
-   cd infra/docker
-   docker-compose -f docker-compose.dev.yml up
-   ```
+#### Event Operations
 
-## API Documentation
+- `GET /api/topics/{topicName}/events`: Retrieve events from a topic
+  - Query parameters:
+    - `fromVersion`: Only return events with version >= this value
+    - `type`: Filter events by event type
+- `POST /api/topics/{topicName}/events`: Append events to a topic
 
-### Endpoints
+## Request/Response Examples
 
-#### Control Plane
+### Creating a Topic
 
-| Method | Endpoint        | Description                              |
-|--------|-----------------|------------------------------------------|
-| GET    | /health         | Health check, returns system information |
-| POST   | /topics         | Create a new topic                       |
-| GET    | /topics         | List all topics                          |
+**Request:**
+```http
+POST /api/topics
+Content-Type: application/json
 
-#### Data Plane
+{
+  "name": "orders",
+  "adapter": "memory",
+  "connection": "",
+  "options": {
+    "retention": "100"
+  }
+}
+```
 
-| Method | Endpoint                     | Description                                |
-|--------|------------------------------|--------------------------------------------|
-| POST   | /topics/{topic}/events       | Publish event(s) to a topic                |
-| GET    | /topics/{topic}/events       | Query events from a topic                  |
-| POST   | /topics/{topic}/subscribe    | Register callback for events (transient)   |
+**Response:**
+```json
+{
+  "status": "success",
+  "message": "Topic 'orders' created successfully",
+  "data": {
+    "name": "orders",
+    "adapter": "memory",
+    "connection": "",
+    "options": {
+      "retention": "100"
+    }
+  }
+}
+```
 
-### Example Requests
+### Appending Events
 
-#### Publish Event
+**Request:**
+```http
+POST /api/topics/orders/events
+Content-Type: application/json
 
-```sh
-curl -X POST http://localhost:8080/topics/orders/events \
-  -H "Content-Type: application/json" \
-  -d '[{
+[
+  {
     "type": "OrderCreated",
     "data": {
       "orderId": "12345",
-      "customerId": "c789",
-      "items": [{"productId": "p123", "quantity": 2}]
+      "customerId": "C789",
+      "items": [{"productId": "P123", "quantity": 2}]
+    },
+    "metadata": {
+      "source": "api",
+      "userId": "U456"
     }
-  }]'
+  }
+]
 ```
 
-#### Query Events
-
-```sh
-curl -X GET "http://localhost:8080/topics/orders/events?from=0"
+**Response:**
+```json
+{
+  "status": "success",
+  "message": "1 events appended to topic 'orders'",
+  "data": {
+    "eventCount": 1,
+    "topic": "orders"
+  }
+}
 ```
 
-## Project Structure
+### Getting Events
 
-```
-/
-├── cmd/                   # Entrypoints
-│   ├── api/               # REST API server
-│   └── replay/            # Projection rebuilds
-│
-├── internal/
-│   ├── api/               # HTTP handlers and middleware
-│   ├── eventstore/        # CQRS core engine
-│   ├── adapters/          # Storage adapters
-│   └── port/              # Interfaces (ports)
-│
-├── infra/                 # Infrastructure
-│   └── docker/            # Docker configurations
-│
-├── docs/                  # Documentation
-└── test/                  # Integration tests
+**Request:**
+```http
+GET /api/topics/orders/events?fromVersion=0&type=OrderCreated
 ```
 
-## Architecture
+**Response:**
+```json
+{
+  "status": "success",
+  "data": {
+    "events": [
+      {
+        "id": "evt_123abc",
+        "topic": "orders",
+        "type": "OrderCreated",
+        "data": {
+          "orderId": "12345",
+          "customerId": "C789",
+          "items": [{"productId": "P123", "quantity": 2}]
+        },
+        "metadata": {
+          "source": "api",
+          "userId": "U456"
+        },
+        "timestamp": 1647359061000,
+        "version": 1
+      }
+    ],
+    "count": 1,
+    "topic": "orders",
+    "fromVersion": 0
+  }
+}
+```
 
-The project follows hexagonal architecture (ports and adapters):
+## Running the API
 
-- **Core Domain**: Contains business logic and domain models
-- **Ports**: Interfaces that define how the core interacts with the outside world
-- **Adapters**: Implementations of the interfaces (ports) for different technologies
+1. Set the PORT environment variable (optional, defaults to 8080)
+2. Run the API: `go run src/cmd/api/main.go`
 
-## Storage Adapters
+## Development
 
-- **Memory**: In-memory storage for testing and development
-- **File System**: JSON file-based storage
-- **PostgreSQL**: Relational database storage
-- **Azure Blob Storage**: Cloud-based object storage
+### Structure
 
-## Testing
+- `src/cmd/api`: Main application entry point
+- `src/internal/api`: API implementation (handlers, middleware)
+- `src/internal/eventstore`: Core event sourcing functionality
+- `src/internal/port`: Interface definitions
 
-Run the test suite:
+### Testing
 
-```sh
+Run the tests:
+
+```bash
 go test ./...
 ```
 
-Generate coverage report:
+## Features
 
-```sh
-go test -coverprofile=coverage.out ./...
-go tool cover -html=coverage.out
-```
-
-## CI/CD
-
-This project uses GitHub Actions for continuous integration and delivery:
-
-- Automatically runs tests on pull requests
-- Builds and pushes Docker images on merge to main
-- Generates and uploads test coverage reports
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details. 
+- Robust health monitoring
+- Proper error handling with appropriate HTTP status codes
+- Middleware for logging, CORS, and panic recovery
+- Graceful shutdown handling
+- EventStore lifecycle management 

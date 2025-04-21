@@ -18,6 +18,7 @@ type MemoryEventRepository struct {
 	events        map[string][]outbound.Event // topic -> ordered events
 	topicConfigs  map[string]outbound.TopicConfig
 	latestVersion map[string]int64 // topic -> latest version
+	state         outbound.RepositoryState
 }
 
 // NewMemoryEventRepository creates a new in-memory event repository
@@ -26,12 +27,30 @@ func NewMemoryEventRepository() *MemoryEventRepository {
 		events:        make(map[string][]outbound.Event),
 		topicConfigs:  make(map[string]outbound.TopicConfig),
 		latestVersion: make(map[string]int64),
+		state:         outbound.StateUninitialized,
 	}
 }
 
 // Initialize prepares the repository for use
 func (m *MemoryEventRepository) Initialize(ctx context.Context) error {
-	// Nothing to initialize for in-memory repository
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Only initialize if not already in ready state
+	if m.state == outbound.StateReady {
+		return nil
+	}
+
+	// Mark as initializing
+	m.state = outbound.StateInitializing
+
+	// Clear existing data if any
+	m.events = make(map[string][]outbound.Event)
+	m.topicConfigs = make(map[string]outbound.TopicConfig)
+	m.latestVersion = make(map[string]int64)
+
+	// Mark as ready
+	m.state = outbound.StateReady
 	return nil
 }
 
@@ -39,6 +58,11 @@ func (m *MemoryEventRepository) Initialize(ctx context.Context) error {
 func (m *MemoryEventRepository) AppendEvents(ctx context.Context, topic string, events []outbound.Event) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	// Check repository state
+	if m.state != outbound.StateReady {
+		return errors.New("repository not in ready state")
+	}
 
 	// Verify topic exists
 	if _, exists := m.events[topic]; !exists {
@@ -80,6 +104,11 @@ func (m *MemoryEventRepository) GetEvents(ctx context.Context, topic string, fro
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	// Check repository state
+	if m.state != outbound.StateReady {
+		return nil, errors.New("repository not in ready state")
+	}
+
 	// Verify topic exists
 	topicEvents, exists := m.events[topic]
 	if !exists {
@@ -106,6 +135,11 @@ func (m *MemoryEventRepository) GetEvents(ctx context.Context, topic string, fro
 func (m *MemoryEventRepository) GetEventsByType(ctx context.Context, topic string, eventType string, fromVersion int64) ([]outbound.Event, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+
+	// Check repository state
+	if m.state != outbound.StateReady {
+		return nil, errors.New("repository not in ready state")
+	}
 
 	// Verify topic exists
 	topicEvents, exists := m.events[topic]
@@ -134,6 +168,11 @@ func (m *MemoryEventRepository) GetLatestVersion(ctx context.Context, topic stri
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	// Check repository state
+	if m.state != outbound.StateReady {
+		return 0, errors.New("repository not in ready state")
+	}
+
 	// Verify topic exists
 	if _, exists := m.events[topic]; !exists {
 		return 0, errors.New("topic not found")
@@ -146,6 +185,11 @@ func (m *MemoryEventRepository) GetLatestVersion(ctx context.Context, topic stri
 func (m *MemoryEventRepository) CreateTopic(ctx context.Context, config outbound.TopicConfig) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	// Check repository state
+	if m.state != outbound.StateReady {
+		return errors.New("repository not in ready state")
+	}
 
 	// Verify topic doesn't already exist
 	if _, exists := m.events[config.Name]; exists {
@@ -165,6 +209,11 @@ func (m *MemoryEventRepository) DeleteTopic(ctx context.Context, topic string) e
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	// Check repository state
+	if m.state != outbound.StateReady {
+		return errors.New("repository not in ready state")
+	}
+
 	// Verify topic exists
 	if _, exists := m.events[topic]; !exists {
 		return errors.New("topic not found")
@@ -183,6 +232,11 @@ func (m *MemoryEventRepository) ListTopics(ctx context.Context) ([]outbound.Topi
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	// Check repository state
+	if m.state != outbound.StateReady {
+		return nil, errors.New("repository not in ready state")
+	}
+
 	topics := make([]outbound.TopicConfig, 0, len(m.topicConfigs))
 	for _, config := range m.topicConfigs {
 		topics = append(topics, config)
@@ -196,6 +250,11 @@ func (m *MemoryEventRepository) TopicExists(ctx context.Context, topic string) (
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	// Check repository state
+	if m.state != outbound.StateReady {
+		return false, errors.New("repository not in ready state")
+	}
+
 	_, exists := m.events[topic]
 	return exists, nil
 }
@@ -204,6 +263,11 @@ func (m *MemoryEventRepository) TopicExists(ctx context.Context, topic string) (
 func (m *MemoryEventRepository) UpdateTopicConfig(ctx context.Context, config outbound.TopicConfig) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	// Check repository state
+	if m.state != outbound.StateReady {
+		return errors.New("repository not in ready state")
+	}
 
 	// Verify topic exists
 	if _, exists := m.events[config.Name]; !exists {
@@ -221,6 +285,11 @@ func (m *MemoryEventRepository) GetTopicConfig(ctx context.Context, topic string
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	// Check repository state
+	if m.state != outbound.StateReady {
+		return outbound.TopicConfig{}, errors.New("repository not in ready state")
+	}
+
 	// Verify topic exists
 	config, exists := m.topicConfigs[topic]
 	if !exists {
@@ -232,7 +301,69 @@ func (m *MemoryEventRepository) GetTopicConfig(ctx context.Context, topic string
 
 // Close cleans up resources
 func (m *MemoryEventRepository) Close() error {
-	// No resources to clean up for in-memory implementation
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Only close if in ready state
+	if m.state != outbound.StateReady {
+		return nil
+	}
+
+	// Mark as closing
+	m.state = outbound.StateClosing
+
+	// Clear data to free memory
+	m.events = nil
+	m.topicConfigs = nil
+	m.latestVersion = nil
+
+	// Mark as closed
+	m.state = outbound.StateClosed
+	return nil
+}
+
+// GetState returns the current state of the repository
+func (m *MemoryEventRepository) GetState() outbound.RepositoryState {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.state
+}
+
+// Reopen reopens a closed repository
+func (m *MemoryEventRepository) Reopen(ctx context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Only reopen if closed
+	if m.state != outbound.StateClosed {
+		return errors.New("repository is not in closed state")
+	}
+
+	// Recreate data structures
+	m.events = make(map[string][]outbound.Event)
+	m.topicConfigs = make(map[string]outbound.TopicConfig)
+	m.latestVersion = make(map[string]int64)
+
+	// Mark as ready
+	m.state = outbound.StateReady
+	return nil
+}
+
+// Reset clears all data and reinitializes the repository
+func (m *MemoryEventRepository) Reset(ctx context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Mark as initializing
+	m.state = outbound.StateInitializing
+
+	// Clear all data
+	m.events = make(map[string][]outbound.Event)
+	m.topicConfigs = make(map[string]outbound.TopicConfig)
+	m.latestVersion = make(map[string]int64)
+
+	// Mark as ready
+	m.state = outbound.StateReady
 	return nil
 }
 
@@ -242,7 +373,9 @@ func (m *MemoryEventRepository) Health(ctx context.Context) (map[string]interfac
 	defer m.mu.RUnlock()
 
 	health := map[string]interface{}{
-		"status":     "up",
+		"status":     string(outbound.StatusUp),
+		"state":      string(m.state),
+		"type":       "memory",
 		"topicCount": len(m.topicConfigs),
 	}
 
@@ -253,5 +386,47 @@ func (m *MemoryEventRepository) Health(ctx context.Context) (map[string]interfac
 	}
 	health["eventCounts"] = topicStats
 
+	// If not in ready state, mark as down
+	if m.state != outbound.StateReady {
+		health["status"] = string(outbound.StatusDown)
+		health["message"] = "Repository is not in ready state"
+	}
+
 	return health, nil
+}
+
+// HealthInfo returns structured health information
+func (m *MemoryEventRepository) HealthInfo(ctx context.Context) (outbound.HealthInfo, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	// Default to up status
+	status := outbound.StatusUp
+	var message string
+
+	// Check state
+	if m.state != outbound.StateReady {
+		status = outbound.StatusDown
+		message = "Repository is not in ready state"
+	}
+
+	// Prepare additional info
+	additionalInfo := map[string]interface{}{
+		"type":       "memory",
+		"topicCount": len(m.topicConfigs),
+	}
+
+	// Add event counts
+	topicStats := make(map[string]int)
+	for topic, events := range m.events {
+		topicStats[topic] = len(events)
+	}
+	additionalInfo["eventCounts"] = topicStats
+
+	return outbound.HealthInfo{
+		Status:         status,
+		State:          m.state,
+		Message:        message,
+		AdditionalInfo: additionalInfo,
+	}, nil
 }

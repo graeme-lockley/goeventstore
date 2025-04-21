@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -11,6 +12,8 @@ import (
 	"goeventsource/src/internal/api/handlers"
 	"goeventsource/src/internal/api/logging"
 	"goeventsource/src/internal/api/middleware"
+	"goeventsource/src/internal/eventstore"
+	"goeventsource/src/internal/eventstore/models"
 )
 
 var logger = logging.NewLogger(logging.INFO)
@@ -25,12 +28,34 @@ func main() {
 		port = "8080"
 	}
 
+	// Initialize EventStore
+	store, err := setupEventStore()
+	if err != nil {
+		logger.Fatal("Failed to initialize EventStore", map[string]interface{}{"error": err.Error()})
+	}
+
+	// Create EventStore handlers
+	esHandlers := handlers.NewEventStoreHandlers(store)
+
 	// Create a new router
 	mux := http.NewServeMux()
 
-	// Register routes
+	// Register base routes
 	mux.HandleFunc("GET /", handlers.HelloWorldHandler)
 	mux.HandleFunc("GET /health", handlers.HealthCheckHandler)
+
+	// Register EventStore routes
+	mux.HandleFunc("GET /api/eventstore/health", esHandlers.HealthCheckHandler)
+
+	// Topic management endpoints
+	mux.HandleFunc("GET /api/topics", esHandlers.ListTopicsHandler)
+	mux.HandleFunc("POST /api/topics", esHandlers.CreateTopicHandler)
+	mux.HandleFunc("GET /api/topics/{topicName}", esHandlers.GetTopicHandler)
+	mux.HandleFunc("DELETE /api/topics/{topicName}", esHandlers.DeleteTopicHandler)
+
+	// Event operations endpoints
+	mux.HandleFunc("GET /api/topics/{topicName}/events", esHandlers.GetEventsHandler)
+	mux.HandleFunc("POST /api/topics/{topicName}/events", esHandlers.AppendEventsHandler)
 
 	// Apply middleware to the router
 	var handler http.Handler = mux
@@ -65,10 +90,45 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	// Close the EventStore
+	if err := store.Close(); err != nil {
+		logger.Error("Failed to close EventStore", map[string]interface{}{"error": err.Error()})
+	}
+
 	if err := server.Shutdown(ctx); err != nil {
 		logger.Error("Server shutdown failed", map[string]interface{}{"error": err.Error()})
 		os.Exit(1)
 	}
 
 	logger.Info("Server exited properly")
+}
+
+// setupEventStore initializes and returns an EventStore instance
+func setupEventStore() (*eventstore.EventStore, error) {
+	// Create a default configuration for the EventStore
+	config := models.EventStoreConfig{
+		Logger: log.New(os.Stdout, "[EventStore] ", log.LstdFlags),
+		ConfigStream: models.EventStreamConfig{
+			Name:       "config",
+			Adapter:    "fs", // Use in-memory adapter for configuration by default
+			Connection: "config-repository",
+			Options:    make(map[string]string),
+		},
+	}
+
+	// Create the EventStore instance
+	store, err := eventstore.NewEventStore(config)
+	if err != nil {
+		return nil, err
+	}
+
+	// Initialize the EventStore
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := store.Initialize(ctx); err != nil {
+		return nil, err
+	}
+
+	return store, nil
 }
