@@ -24,7 +24,7 @@
    - Add methods for querying subscribers by topic, state
    - Implement subscription ID generation
 
-- [ ] 4. Add subscription filtering logic in `src/internal/eventstore/subscribers/filter.go`
+- [x] 4. Add subscription filtering logic in `src/internal/eventstore/subscribers/filter.go`
    - Implement topic-based filtering
    - Create event type filtering mechanism
    - Add version-based filtering logic (from_version)

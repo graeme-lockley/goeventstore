@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"reflect"
 	"sync"
 	"time"
 
@@ -352,7 +351,8 @@ func (r *Registry) BroadcastEvent(ctx context.Context, event outbound.Event) int
 
 	// Submit delivery tasks to the worker pool
 	for _, subscriber := range subscribers {
-		if shouldDeliverEvent(subscriber, event) {
+		// Use the new filtering mechanism
+		if ShouldDeliverEvent(subscriber.Filter.ToOutboundFilter(), event) {
 			select {
 			case <-ctx.Done():
 				// Context cancelled
@@ -462,41 +462,6 @@ func (r *Registry) removeFromTopicMaps(subscriber *models.Subscriber) {
 			}
 		}
 	}
-}
-
-// shouldDeliverEvent determines if an event should be delivered to a subscriber
-// based on the subscriber's filter criteria
-func shouldDeliverEvent(subscriber *models.Subscriber, event outbound.Event) bool {
-	// Skip if version is below the threshold
-	if event.Version < subscriber.Filter.FromVersion {
-		return false
-	}
-
-	// Check event type filter if specified
-	if len(subscriber.Filter.EventTypes) > 0 {
-		matches := false
-		for _, allowedType := range subscriber.Filter.EventTypes {
-			if allowedType == event.Type {
-				matches = true
-				break
-			}
-		}
-		if !matches {
-			return false
-		}
-	}
-
-	// Check metadata filters if specified
-	if len(subscriber.Filter.Metadata) > 0 {
-		for key, filterValue := range subscriber.Filter.Metadata {
-			eventValue, exists := event.Metadata[key]
-			if !exists || !reflect.DeepEqual(eventValue, filterValue) {
-				return false
-			}
-		}
-	}
-
-	return true
 }
 
 // generateSubscriberID creates a unique subscriber ID

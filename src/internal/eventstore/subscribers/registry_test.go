@@ -618,22 +618,15 @@ func TestConcurrentOperations(t *testing.T) {
 	}
 }
 
-func TestShouldDeliverEvent(t *testing.T) {
+func TestEventFiltering(t *testing.T) {
 	// Create subscriber with filters
-	config := models.SubscriberConfig{
-		ID:     "test-subscriber",
-		Topics: []string{"topic1"},
-		Filter: models.SubscriberFilter{
-			EventTypes:  []string{"TypeA", "TypeB"},
-			FromVersion: 5,
-			Metadata: map[string]interface{}{
-				"source": "test-source",
-			},
+	subFilter := outbound.SubscriberFilter{
+		EventTypes:  []string{"TypeA", "TypeB"},
+		FromVersion: 5,
+		Metadata: map[string]interface{}{
+			"source": "test-source",
 		},
-		Timeout: models.DefaultTimeoutConfig(),
 	}
-
-	subscriber := models.NewSubscriber(config)
 
 	// Test matching event
 	matchingEvent := outbound.Event{
@@ -646,8 +639,8 @@ func TestShouldDeliverEvent(t *testing.T) {
 		},
 	}
 
-	if !shouldDeliverEvent(subscriber, matchingEvent) {
-		t.Error("Expected shouldDeliverEvent to return true for matching event")
+	if !ShouldDeliverEvent(subFilter, matchingEvent) {
+		t.Error("Expected ShouldDeliverEvent to return true for matching event")
 	}
 
 	// Test non-matching event type
@@ -660,8 +653,8 @@ func TestShouldDeliverEvent(t *testing.T) {
 		},
 	}
 
-	if shouldDeliverEvent(subscriber, wrongTypeEvent) {
-		t.Error("Expected shouldDeliverEvent to return false for wrong type event")
+	if ShouldDeliverEvent(subFilter, wrongTypeEvent) {
+		t.Error("Expected ShouldDeliverEvent to return false for wrong type event")
 	}
 
 	// Test version too low
@@ -674,8 +667,8 @@ func TestShouldDeliverEvent(t *testing.T) {
 		},
 	}
 
-	if shouldDeliverEvent(subscriber, lowVersionEvent) {
-		t.Error("Expected shouldDeliverEvent to return false for low version event")
+	if ShouldDeliverEvent(subFilter, lowVersionEvent) {
+		t.Error("Expected ShouldDeliverEvent to return false for low version event")
 	}
 
 	// Test missing metadata
@@ -688,8 +681,8 @@ func TestShouldDeliverEvent(t *testing.T) {
 		},
 	}
 
-	if shouldDeliverEvent(subscriber, missingMetadataEvent) {
-		t.Error("Expected shouldDeliverEvent to return false for missing metadata event")
+	if ShouldDeliverEvent(subFilter, missingMetadataEvent) {
+		t.Error("Expected ShouldDeliverEvent to return false for missing metadata event")
 	}
 
 	// Test mismatched metadata
@@ -702,21 +695,14 @@ func TestShouldDeliverEvent(t *testing.T) {
 		},
 	}
 
-	if shouldDeliverEvent(subscriber, wrongMetadataEvent) {
-		t.Error("Expected shouldDeliverEvent to return false for wrong metadata event")
+	if ShouldDeliverEvent(subFilter, wrongMetadataEvent) {
+		t.Error("Expected ShouldDeliverEvent to return false for wrong metadata event")
 	}
 
 	// Test with empty filters
-	emptyFilterConfig := models.SubscriberConfig{
-		ID:      "empty-filter",
-		Topics:  []string{"topic1"},
-		Filter:  models.SubscriberFilter{}, // Empty filter accepts all events
-		Timeout: models.DefaultTimeoutConfig(),
-	}
+	emptyFilter := outbound.SubscriberFilter{} // Empty filter accepts all events
 
-	emptyFilterSubscriber := models.NewSubscriber(emptyFilterConfig)
-
-	if !shouldDeliverEvent(emptyFilterSubscriber, matchingEvent) {
-		t.Error("Expected shouldDeliverEvent to return true for subscriber with empty filter")
+	if !ShouldDeliverEvent(emptyFilter, matchingEvent) {
+		t.Error("Expected ShouldDeliverEvent to return true for subscriber with empty filter")
 	}
 }
