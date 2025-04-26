@@ -185,3 +185,33 @@ func (l *SubscriberLogger) LogRetryAttempt(ctx context.Context, subscriberID str
 	logFields["next_timeout"] = nextTimeout.String()
 	l.Info(ctx, "Retrying event delivery", logFields)
 }
+
+// LogRegistration logs a subscriber registration with detailed client information
+func (l *SubscriberLogger) LogRegistration(ctx context.Context, subscriberID string, clientInfo map[string]interface{}, fields map[string]interface{}) {
+	// Combine client info with other fields
+	logFields := SubscriberLogFields(subscriberID, fields)
+
+	// Add client information fields with proper prefixes
+	for k, v := range clientInfo {
+		logFields["client_"+k] = v
+	}
+
+	// Include special registration fields
+	if ttl, ok := logFields["ttl"]; ok {
+		logFields["subscription_ttl"] = ttl
+		delete(logFields, "ttl") // Clean up the original field
+	}
+
+	// Log detailed registration information
+	l.Info(ctx, fmt.Sprintf("Subscriber registered: %s", subscriberID), logFields)
+
+	// If this is a time-limited subscription, log that specifically
+	if exp, ok := logFields["expiration"]; ok {
+		l.Debug(ctx, fmt.Sprintf("Time-limited subscription created for %s", subscriberID),
+			map[string]interface{}{
+				"subscriber_id":    subscriberID,
+				"expiration":       exp,
+				"subscription_ttl": logFields["subscription_ttl"],
+			})
+	}
+}

@@ -190,17 +190,50 @@ func (r *Registry) SetLogger(logger *SubscriberLogger) {
 	r.logger = logger
 }
 
+// RegisterOptions contains optional parameters for subscriber registration
+type RegisterOptions struct {
+	// ClientIP is the IP address of the client registering the subscriber
+	ClientIP string
+
+	// UserAgent is the user agent of the client registering the subscriber
+	UserAgent string
+
+	// ClientID is an identifier for the client registering the subscriber
+	ClientID string
+
+	// Expiration is when the subscription will expire (zero value means no expiration)
+	Expiration time.Time
+
+	// RequestID is a correlation ID for tracing the registration request
+	RequestID string
+}
+
+// DefaultRegisterOptions returns default registration options
+func DefaultRegisterOptions() RegisterOptions {
+	return RegisterOptions{}
+}
+
 // Register adds a new subscriber to the registry
 func (r *Registry) Register(config models.SubscriberConfig) (*models.Subscriber, error) {
+	return r.RegisterWithClientInfo(context.Background(), config, DefaultRegisterOptions())
+}
+
+// RegisterWithClientInfo adds a new subscriber to the registry with client information for logging
+func (r *Registry) RegisterWithClientInfo(ctx context.Context, config models.SubscriberConfig, options RegisterOptions) (*models.Subscriber, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// Create context with request ID if provided
+	if options.RequestID != "" {
+		ctx = context.WithValue(ctx, "request_id", options.RequestID)
+	}
 
 	// Generate an ID if one isn't provided
 	if config.ID == "" {
 		config.ID = uuid.New().String()
 	} else if _, exists := r.subscribers[config.ID]; exists {
 		if r.logger != nil {
-			r.logger.Error(context.Background(), "Failed to register subscriber: ID already exists",
+			r.logger.Error(ctx, "Failed to register subscriber: ID already exists",
 				map[string]interface{}{"subscriber_id": config.ID})
 		}
 		return nil, ErrSubscriberAlreadyExists
@@ -216,14 +249,63 @@ func (r *Registry) Register(config models.SubscriberConfig) (*models.Subscriber,
 	r.addToTopicMaps(subscriber)
 
 	if r.logger != nil {
-		r.logger.LogLifecycleEvent(context.Background(), subscriber.ID, "registered",
-			map[string]interface{}{
-				"topics":        subscriber.Topics,
-				"filter":        subscriber.Filter,
-				"buffer_size":   subscriber.BufferSize,
-				"timeout":       subscriber.Timeout,
-				"creation_time": subscriber.CreatedAt,
-			})
+		// Create detailed log fields with all relevant information
+		logFields := map[string]interface{}{
+			"topics":        subscriber.Topics,
+			"filter":        subscriber.Filter,
+			"buffer_size":   subscriber.BufferSize,
+			"timeout":       subscriber.Timeout,
+			"creation_time": subscriber.CreatedAt,
+		}
+
+		// Prepare client information for logging
+		clientInfo := map[string]interface{}{}
+		if options.ClientIP != "" {
+			clientInfo["ip"] = options.ClientIP
+		}
+		if options.UserAgent != "" {
+			clientInfo["user_agent"] = options.UserAgent
+		}
+		if options.ClientID != "" {
+			clientInfo["id"] = options.ClientID
+		}
+
+		// Add expiration if set
+		if !options.Expiration.IsZero() {
+			logFields["expiration"] = options.Expiration.Format(time.RFC3339)
+			logFields["ttl"] = options.Expiration.Sub(time.Now()).String()
+		}
+
+		// Use the specialized registration logger
+		r.logger.LogRegistration(ctx, subscriber.ID, clientInfo, logFields)
+
+		// Log standard lifecycle event
+		r.logger.LogLifecycleEvent(ctx, subscriber.ID, "registered", logFields)
+
+		// Log detailed information at DEBUG level
+		if len(subscriber.Topics) > 0 {
+			r.logger.Debug(ctx, fmt.Sprintf("Subscriber registered for %d topics", len(subscriber.Topics)),
+				map[string]interface{}{
+					"subscriber_id": subscriber.ID,
+					"topics":        subscriber.Topics,
+				})
+		}
+
+		if len(subscriber.Filter.EventTypes) > 0 {
+			r.logger.Debug(ctx, fmt.Sprintf("Subscriber registered with %d event type filters", len(subscriber.Filter.EventTypes)),
+				map[string]interface{}{
+					"subscriber_id": subscriber.ID,
+					"event_types":   subscriber.Filter.EventTypes,
+				})
+		}
+
+		if subscriber.Filter.FromVersion > 0 {
+			r.logger.Debug(ctx, "Subscriber registered with version filter",
+				map[string]interface{}{
+					"subscriber_id": subscriber.ID,
+					"from_version":  subscriber.Filter.FromVersion,
+				})
+		}
 	}
 
 	return subscriber, nil

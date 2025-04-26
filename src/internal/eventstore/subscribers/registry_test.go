@@ -1,8 +1,11 @@
 package subscribers
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -704,5 +707,100 @@ func TestEventFiltering(t *testing.T) {
 
 	if !ShouldDeliverEvent(emptyFilter, matchingEvent) {
 		t.Error("Expected ShouldDeliverEvent to return true for subscriber with empty filter")
+	}
+}
+
+func TestRegisterWithClientInfo(t *testing.T) {
+	// Create a custom logger with a buffer to capture output
+	var buf bytes.Buffer
+	customLogger := log.New(&buf, "", 0)
+
+	logger := NewSubscriberLogger(DEBUG)
+	logger.logger = customLogger
+
+	registry := NewRegistry()
+	registry.SetLogger(logger)
+
+	// Create a configuration
+	config := models.SubscriberConfig{
+		ID:     "client-info-test",
+		Topics: []string{"test-topic"},
+		Filter: models.SubscriberFilter{
+			EventTypes: []string{"TestEvent"},
+		},
+		Timeout:    models.DefaultTimeoutConfig(),
+		BufferSize: 100,
+	}
+
+	// Create client info options
+	options := RegisterOptions{
+		ClientIP:   "10.0.0.1",
+		UserAgent:  "TestBrowser/2.0",
+		ClientID:   "test-client-001",
+		RequestID:  "req-12345",
+		Expiration: time.Now().Add(2 * time.Hour),
+	}
+
+	// Register with client info
+	subscriber, err := registry.RegisterWithClientInfo(context.Background(), config, options)
+
+	// Verify registration succeeded
+	if err != nil {
+		t.Fatalf("Expected successful registration, got error: %v", err)
+	}
+
+	if subscriber.ID != "client-info-test" {
+		t.Errorf("Expected ID 'client-info-test', got: %s", subscriber.ID)
+	}
+
+	// Capture the log output
+	output := buf.String()
+
+	// Verify client info was logged
+	if !strings.Contains(output, "10.0.0.1") {
+		t.Errorf("Expected log to contain client IP, log output: %s", output)
+	}
+
+	if !strings.Contains(output, "TestBrowser/2.0") {
+		t.Errorf("Expected log to contain user agent, log output: %s", output)
+	}
+
+	if !strings.Contains(output, "test-client-001") {
+		t.Errorf("Expected log to contain client ID, log output: %s", output)
+	}
+
+	// Verify request ID was included
+	if !strings.Contains(output, "req-12345") {
+		t.Errorf("Expected log to contain request ID, log output: %s", output)
+	}
+
+	// Verify expiration was logged
+	if !strings.Contains(output, "expiration") {
+		t.Errorf("Expected log to contain expiration info, log output: %s", output)
+	}
+
+	// Test with default options (no client info)
+	buf.Reset()
+
+	config.ID = "default-options-test"
+	subscriber, err = registry.Register(config)
+
+	if err != nil {
+		t.Fatalf("Expected successful registration with default options, got error: %v", err)
+	}
+
+	// Verify default registration still works
+	if subscriber.ID != "default-options-test" {
+		t.Errorf("Expected ID 'default-options-test', got: %s", subscriber.ID)
+	}
+
+	// Verify subscriber was added to registry
+	retrievedSub, err := registry.Get("default-options-test")
+	if err != nil {
+		t.Errorf("Failed to retrieve subscriber: %v", err)
+	}
+
+	if retrievedSub.ID != "default-options-test" {
+		t.Errorf("Expected retrieved subscriber ID 'default-options-test', got: %s", retrievedSub.ID)
 	}
 }

@@ -188,3 +188,84 @@ func TestSubscriberLogger_EventDeliveryLogging(t *testing.T) {
 	// Clear buffer
 	buf.Reset()
 }
+
+func TestSubscriberLogger_LogRegistration(t *testing.T) {
+	// Set up a buffer to capture log output
+	var buf bytes.Buffer
+	customLogger := log.New(&buf, "", 0)
+
+	logger := &SubscriberLogger{
+		logger:   customLogger,
+		minLevel: INFO,
+		prefix:   "[TEST] ",
+	}
+
+	// Create test context with request ID
+	ctx := context.WithValue(context.Background(), "request_id", "test-registration-id")
+
+	// Prepare client information
+	clientInfo := map[string]interface{}{
+		"ip":         "192.168.1.1",
+		"user_agent": "TestAgent/1.0",
+		"id":         "client-123",
+	}
+
+	// Prepare subscriber fields
+	subscriberID := "test-subscriber-reg"
+	fields := map[string]interface{}{
+		"topics":      []string{"topic1", "topic2"},
+		"buffer_size": 100,
+		"ttl":         "1h0m0s",
+		"expiration":  "2025-01-01T00:00:00Z",
+	}
+
+	// Log a registration
+	logger.LogRegistration(ctx, subscriberID, clientInfo, fields)
+
+	output := buf.String()
+
+	// Parse the JSON
+	var entry map[string]interface{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &entry); err != nil {
+		t.Fatalf("Failed to parse log JSON: %v", err)
+	}
+
+	// Verify client information is properly included
+	if entry["client_ip"] != "192.168.1.1" {
+		t.Errorf("Expected client_ip to be '192.168.1.1', got: %v", entry["client_ip"])
+	}
+
+	if entry["client_user_agent"] != "TestAgent/1.0" {
+		t.Errorf("Expected client_user_agent to be 'TestAgent/1.0', got: %v", entry["client_user_agent"])
+	}
+
+	// Verify TTL was properly renamed
+	if entry["subscription_ttl"] != "1h0m0s" {
+		t.Errorf("Expected subscription_ttl to be '1h0m0s', got: %v", entry["subscription_ttl"])
+	}
+
+	// Verify message format
+	if !strings.Contains(entry["message"].(string), subscriberID) {
+		t.Errorf("Expected message to include subscriber ID, got: %v", entry["message"])
+	}
+
+	// Verify request ID from context
+	if entry["request_id"] != "test-registration-id" {
+		t.Errorf("Expected request_id to be 'test-registration-id', got: %v", entry["request_id"])
+	}
+
+	// Clear buffer for next test
+	buf.Reset()
+
+	// Now check if the debug log for time-limited subscription was generated
+	if logger.minLevel <= DEBUG {
+		var debugEntry map[string]interface{}
+		if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &debugEntry); err == nil {
+			if debugEntry["level"] == "DEBUG" {
+				if !strings.Contains(debugEntry["message"].(string), "Time-limited") {
+					t.Errorf("Expected debug message to mention time-limited subscription, got: %v", debugEntry["message"])
+				}
+			}
+		}
+	}
+}
