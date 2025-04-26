@@ -52,15 +52,17 @@ type workerPool struct {
 	workerWg   sync.WaitGroup
 	ctx        context.Context
 	cancelFunc context.CancelFunc
+	logger     *SubscriberLogger
 }
 
 // newWorkerPool creates a new worker pool with the given configuration
-func newWorkerPool(config WorkerPoolConfig) *workerPool {
+func newWorkerPool(config WorkerPoolConfig, logger *SubscriberLogger) *workerPool {
 	ctx, cancel := context.WithCancel(context.Background())
 	pool := &workerPool{
 		taskQueue:  make(chan deliveryTask, config.QueueSize),
 		ctx:        ctx,
 		cancelFunc: cancel,
+		logger:     logger,
 	}
 
 	// Start the workers
@@ -81,23 +83,46 @@ func (wp *workerPool) worker() {
 		case <-wp.ctx.Done():
 			return
 		case task := <-wp.taskQueue:
-			// Check if context is still valid
+			startTime := time.Now()
+			var deliveryErr error
+
+			// Log delivery attempt
+			if wp.logger != nil {
+				wp.logger.Debug(task.ctx, "Attempting event delivery", map[string]interface{}{
+					"subscriber_id": task.subscriber.ID,
+					"event_id":      task.event.ID,
+					"event_type":    task.event.Type,
+					"topic":         task.event.Topic,
+				})
+			}
+
+			// Check if context is still valid before proceeding
 			select {
 			case <-task.ctx.Done():
-				// Context cancelled, report error
-				if task.resultChan != nil {
-					task.resultChan <- task.ctx.Err()
-				}
+				// Context cancelled before delivery attempt
+				deliveryErr = task.ctx.Err()
 			default:
 				// Create delivery timeout context
 				deliveryCtx, cancel := context.WithTimeout(task.ctx, task.subscriber.Timeout.CurrentTimeout)
-				err := task.subscriber.ReceiveEvent(deliveryCtx, task.event)
+				deliveryErr = task.subscriber.ReceiveEvent(deliveryCtx, task.event)
 				cancel() // Always cancel the context to avoid leaks
+			}
 
-				// Report result if channel provided
-				if task.resultChan != nil {
-					task.resultChan <- err
+			duration := time.Since(startTime)
+			success := deliveryErr == nil
+
+			// Log delivery outcome
+			if wp.logger != nil {
+				logFields := map[string]interface{}{}
+				if deliveryErr != nil {
+					logFields["error"] = deliveryErr.Error()
 				}
+				wp.logger.LogEventDelivery(task.ctx, task.subscriber.ID, task.event.ID, success, duration, logFields)
+			}
+
+			// Report result if channel provided
+			if task.resultChan != nil {
+				task.resultChan <- deliveryErr
 			}
 		}
 	}
@@ -175,12 +200,13 @@ func NewRegistry() *Registry {
 
 // NewRegistryWithConfig creates a new registry with custom worker pool configuration
 func NewRegistryWithConfig(poolConfig WorkerPoolConfig) *Registry {
-	return &Registry{
+	r := &Registry{
 		subscribers:      make(map[string]*models.Subscriber),
 		topicSubscribers: make(map[string]map[string]*models.Subscriber),
-		workerPool:       newWorkerPool(poolConfig),
 		logger:           NewSubscriberLogger(INFO),
 	}
+	r.workerPool = newWorkerPool(poolConfig, r.logger)
+	return r
 }
 
 // SetLogger sets the logger for the registry

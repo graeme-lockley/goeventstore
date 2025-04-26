@@ -510,7 +510,20 @@ func TestCleanupInactive(t *testing.T) {
 }
 
 func TestBroadcastEvent(t *testing.T) {
-	registry := NewRegistry()
+	// Create a buffer to capture log output
+	var buf bytes.Buffer
+	customLogger := log.New(&buf, "", 0)
+	logger := NewSubscriberLogger(DEBUG) // Use DEBUG to capture attempt logs
+	logger.logger = customLogger
+
+	// Initialize registry with the custom logger
+	poolConfig := DefaultWorkerPoolConfig()
+	registry := &Registry{
+		subscribers:      make(map[string]*models.Subscriber),
+		topicSubscribers: make(map[string]map[string]*models.Subscriber),
+		logger:           logger, // Use the custom logger here
+	}
+	registry.workerPool = newWorkerPool(poolConfig, registry.logger) // Pass logger to worker pool
 
 	// Helper function to create a subscriber with a channel we can read from
 	createSubscriber := func(id string, topics []string, eventTypes []string, fromVersion int64) (*models.Subscriber, chan outbound.Event) {
@@ -595,6 +608,48 @@ func TestBroadcastEvent(t *testing.T) {
 		t.Error("Timed out waiting for event in version-filter subscriber")
 	}
 
+	// --- Verify Log Output ---
+	output := buf.String()
+	logLines := strings.Split(strings.TrimSpace(output), "\n")
+
+	attemptLogs := 0
+	deliverySuccessLogs := 0
+	deliveryFailLogs := 0
+
+	for _, line := range logLines {
+		var entry map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue // Skip lines that are not valid JSON
+		}
+
+		if msg, ok := entry["message"].(string); ok {
+			if strings.Contains(msg, "Attempting event delivery") && entry["level"] == "DEBUG" {
+				attemptLogs++
+			}
+			if strings.Contains(msg, "Event delivered successfully") && entry["level"] == "DEBUG" {
+				deliverySuccessLogs++
+			}
+			if strings.Contains(msg, "Event delivery failed") && entry["level"] == "WARN" {
+				deliveryFailLogs++
+			}
+		}
+	}
+
+	// For the first event, we expect 3 attempts and 3 successful deliveries
+	expectedAttempts := 3
+	expectedSuccess := 3
+	if attemptLogs != expectedAttempts {
+		t.Errorf("Expected %d attempt logs for first broadcast, got %d. Logs:\n%s", expectedAttempts, attemptLogs, output)
+	}
+	if deliverySuccessLogs != expectedSuccess {
+		t.Errorf("Expected %d success logs for first broadcast, got %d. Logs:\n%s", expectedSuccess, deliverySuccessLogs, output)
+	}
+	if deliveryFailLogs != 0 {
+		t.Errorf("Expected 0 failure logs for first broadcast, got %d. Logs:\n%s", deliveryFailLogs, output)
+	}
+
+	// --- Broadcast non-matching event ---
+	buf.Reset() // Clear buffer for the next broadcast
 	// Create a non-matching event (wrong type)
 	nonMatchingEvent := outbound.Event{
 		ID:        "non-matching-event",
@@ -613,6 +668,46 @@ func TestBroadcastEvent(t *testing.T) {
 	expectedSuccessCount = 2
 	if successCount != expectedSuccessCount {
 		t.Errorf("Expected %d successful deliveries for non-matching event, got %d", expectedSuccessCount, successCount)
+	}
+
+	// --- Verify Log Output for second broadcast ---
+	output = buf.String()
+	logLines = strings.Split(strings.TrimSpace(output), "\n")
+
+	attemptLogs = 0
+	deliverySuccessLogs = 0
+	deliveryFailLogs = 0
+
+	for _, line := range logLines {
+		var entry map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue // Skip lines that are not valid JSON
+		}
+
+		if msg, ok := entry["message"].(string); ok {
+			if strings.Contains(msg, "Attempting event delivery") && entry["level"] == "DEBUG" {
+				attemptLogs++
+			}
+			if strings.Contains(msg, "Event delivered successfully") && entry["level"] == "DEBUG" {
+				deliverySuccessLogs++
+			}
+			if strings.Contains(msg, "Event delivery failed") && entry["level"] == "WARN" {
+				deliveryFailLogs++
+			}
+		}
+	}
+
+	// For the second event, we expect 2 attempts and 2 successful deliveries
+	expectedAttempts = 2
+	expectedSuccess = 2
+	if attemptLogs != expectedAttempts {
+		t.Errorf("Expected %d attempt logs for second broadcast, got %d. Logs:\n%s", expectedAttempts, attemptLogs, output)
+	}
+	if deliverySuccessLogs != expectedSuccess {
+		t.Errorf("Expected %d success logs for second broadcast, got %d. Logs:\n%s", expectedSuccess, deliverySuccessLogs, output)
+	}
+	if deliveryFailLogs != 0 {
+		t.Errorf("Expected 0 failure logs for second broadcast, got %d. Logs:\n%s", deliveryFailLogs, output)
 	}
 }
 
