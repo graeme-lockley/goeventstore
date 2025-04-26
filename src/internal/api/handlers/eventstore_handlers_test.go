@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"goeventsource/src/internal/eventstore"
 	"goeventsource/src/internal/port/outbound"
@@ -162,6 +163,70 @@ func (m *MockEventStore) Health(ctx context.Context) (map[string]interface{}, er
 
 func (m *MockEventStore) Close() error {
 	return nil
+}
+
+// --- Add Stubs for New Subscriber Methods ---
+
+func (m *MockEventStore) RegisterSubscriber(ctx context.Context, config outbound.SubscriberConfig) (outbound.Subscriber, error) {
+	// Basic mock: return success with a dummy subscriber ID or an error if needed for specific tests
+	mockSub := &MockSubscriber{id: config.ID}
+	return mockSub, nil // Or return nil, errors.New("mock RegisterSubscriber error")
+}
+
+func (m *MockEventStore) DeregisterSubscriber(ctx context.Context, subscriberID string, reason string) error {
+	// Basic mock: return nil or an error
+	return nil // Or return errors.New("mock DeregisterSubscriber error")
+}
+
+func (m *MockEventStore) UpdateSubscriber(ctx context.Context, subscriberID string, updateFn func(outbound.Subscriber) error) error {
+	// Basic mock: find a mock subscriber and call updateFn, or return error
+	mockSub := &MockSubscriber{id: subscriberID}
+	if updateFn != nil {
+		err := updateFn(mockSub)
+		if err != nil {
+			return err
+		}
+	}
+	return nil // Or return errors.New("mock UpdateSubscriber error")
+}
+
+func (m *MockEventStore) GetSubscriber(ctx context.Context, subscriberID string) (outbound.Subscriber, error) {
+	// Basic mock: return a dummy subscriber or ErrSubscriberNotFound
+	if subscriberID == "not-found" { // Example condition for testing
+		return nil, errors.New("mock subscriber not found")
+	}
+	mockSub := &MockSubscriber{id: subscriberID}
+	return mockSub, nil // Or return nil, errors.New("mock GetSubscriber error")
+}
+
+func (m *MockEventStore) ListSubscribers(ctx context.Context, topicFilter string) ([]outbound.Subscriber, error) {
+	// Basic mock: return an empty list or a list with dummy subscribers
+	mockSubs := []outbound.Subscriber{
+		&MockSubscriber{id: "mock-sub-1"},
+		&MockSubscriber{id: "mock-sub-2"},
+	}
+	return mockSubs, nil // Or return nil, errors.New("mock ListSubscribers error")
+}
+
+// --- Add a MockSubscriber to satisfy the interface returns ---
+type MockSubscriber struct {
+	id string
+	// Add other fields if needed for specific test assertions
+}
+
+func (ms *MockSubscriber) ReceiveEvent(ctx context.Context, event outbound.Event) error { return nil }
+func (ms *MockSubscriber) GetID() string                                                { return ms.id }
+func (ms *MockSubscriber) GetTopics() []string                                          { return []string{"mock-topic"} }         // Dummy
+func (ms *MockSubscriber) GetFilter() outbound.SubscriberFilter                         { return outbound.SubscriberFilter{} }    // Dummy
+func (ms *MockSubscriber) GetState() outbound.SubscriberState                           { return outbound.SubscriberStateActive } // Dummy
+func (ms *MockSubscriber) GetStats() outbound.SubscriberStats                           { return outbound.SubscriberStats{} }     // Dummy
+func (ms *MockSubscriber) Pause() error                                                 { return nil }
+func (ms *MockSubscriber) Resume() error                                                { return nil }
+func (ms *MockSubscriber) Close() error                                                 { return nil }
+func (ms *MockSubscriber) UpdateFilter(filter outbound.SubscriberFilter) error          { return nil }
+func (ms *MockSubscriber) UpdateTimeout(config outbound.TimeoutConfig) error            { return nil }
+func (ms *MockSubscriber) GetRetryInfo() (retryCount int, lastRetryTime time.Time, nextTimeout time.Duration) {
+	return 0, time.Time{}, 0 // Dummy
 }
 
 // Tests for EventStore handlers

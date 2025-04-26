@@ -54,6 +54,13 @@ type EventStoreInterface interface {
 	GetEventsByType(ctx context.Context, topicName string, eventType string, fromVersion int64) ([]outbound.Event, error)
 	GetLatestVersion(ctx context.Context, topicName string) (int64, error)
 
+	// Subscriber management
+	RegisterSubscriber(ctx context.Context, config outbound.SubscriberConfig) (outbound.Subscriber, error)
+	DeregisterSubscriber(ctx context.Context, subscriberID string, reason string) error
+	UpdateSubscriber(ctx context.Context, subscriberID string, updateFn func(outbound.Subscriber) error) error
+	GetSubscriber(ctx context.Context, subscriberID string) (outbound.Subscriber, error)
+	ListSubscribers(ctx context.Context, topicFilter string) ([]outbound.Subscriber, error)
+
 	// Lifecycle and health
 	Health(ctx context.Context) (map[string]interface{}, error)
 	Close() error
@@ -881,3 +888,77 @@ func (es *EventStore) GetLatestVersion(ctx context.Context, topicName string) (i
 
 	return version, nil
 }
+
+// --- Subscriber Management Methods (Stubs for Task 11) ---
+
+// RegisterSubscriber adds a new subscriber to the registry (STUB)
+func (es *EventStore) RegisterSubscriber(ctx context.Context, config outbound.SubscriberConfig) (outbound.Subscriber, error) {
+	es.mu.RLock() // Use RLock for read-only checks
+	initialized := es.isInitialized
+	es.mu.RUnlock()
+
+	if !initialized {
+		return nil, ErrNotInitialized
+	}
+	es.logger.Printf("WARN: RegisterSubscriber not fully implemented yet.")
+	// TODO: Implement actual registration logic (Task 13)
+	return nil, errors.New("RegisterSubscriber not implemented")
+}
+
+// DeregisterSubscriber removes a subscriber (STUB)
+func (es *EventStore) DeregisterSubscriber(ctx context.Context, subscriberID string, reason string) error {
+	es.mu.RLock()
+	initialized := es.isInitialized
+	es.mu.RUnlock()
+
+	if !initialized {
+		return ErrNotInitialized
+	}
+	es.logger.Printf("WARN: DeregisterSubscriber not fully implemented yet.")
+	// TODO: Implement actual deregistration logic (Task 14)
+	return errors.New("DeregisterSubscriber not implemented")
+}
+
+// UpdateSubscriber allows modifying a subscriber (STUB)
+func (es *EventStore) UpdateSubscriber(ctx context.Context, subscriberID string, updateFn func(outbound.Subscriber) error) error {
+	es.mu.RLock()
+	initialized := es.isInitialized
+	es.mu.RUnlock()
+
+	if !initialized {
+		return ErrNotInitialized
+	}
+	es.logger.Printf("WARN: UpdateSubscriber not fully implemented yet.")
+	// TODO: Implement actual update logic
+	return errors.New("UpdateSubscriber not implemented")
+}
+
+// GetSubscriber retrieves a subscriber by ID (STUB)
+func (es *EventStore) GetSubscriber(ctx context.Context, subscriberID string) (outbound.Subscriber, error) {
+	es.mu.RLock()
+	initialized := es.isInitialized
+	es.mu.RUnlock()
+
+	if !initialized {
+		return nil, ErrNotInitialized
+	}
+	es.logger.Printf("WARN: GetSubscriber not fully implemented yet.")
+	// TODO: Implement actual retrieval logic
+	return nil, errors.New("GetSubscriber not implemented")
+}
+
+// ListSubscribers returns subscribers matching the filter (STUB)
+func (es *EventStore) ListSubscribers(ctx context.Context, topicFilter string) ([]outbound.Subscriber, error) {
+	es.mu.RLock()
+	initialized := es.isInitialized
+	es.mu.RUnlock()
+
+	if !initialized {
+		return nil, ErrNotInitialized
+	}
+	es.logger.Printf("WARN: ListSubscribers not fully implemented yet.")
+	// TODO: Implement actual listing logic
+	return nil, errors.New("ListSubscribers not implemented")
+}
+
+// --- End Subscriber Management Stubs ---

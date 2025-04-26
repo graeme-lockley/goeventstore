@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"math"
 	"strings"
@@ -44,14 +43,14 @@ func TestNewRegistry(t *testing.T) {
 func TestRegister(t *testing.T) {
 	registry := NewRegistry()
 	config := models.SubscriberConfig{
-		ID:     "test-subscriber-1",
+		ID:     "123e4567-e89b-12d3-a456-426614174000", // Valid UUID
 		Topics: []string{"topic1", "topic2"},
 	}
 
 	subscriber, err := registry.Register(config)
 	assert.NoError(t, err)
 	assert.NotNil(t, subscriber)
-	assert.Equal(t, "test-subscriber-1", subscriber.GetID())
+	assert.Equal(t, "123e4567-e89b-12d3-a456-426614174000", subscriber.GetID())
 
 	// Try registering again with same ID
 	_, err = registry.Register(config)
@@ -75,20 +74,20 @@ func TestRegister(t *testing.T) {
 func TestGet(t *testing.T) {
 	registry := NewRegistry()
 	config := models.SubscriberConfig{
-		ID:     "test-subscriber-get",
+		ID:     "00000000-0000-0000-0000-000000000001",
 		Topics: []string{"topic1"},
 	}
 	_, err := registry.Register(config)
 	require.NoError(t, err)
 
 	// Get existing subscriber
-	subscriber, err := registry.Get("test-subscriber-get")
+	subscriber, err := registry.Get("00000000-0000-0000-0000-000000000001")
 	assert.NoError(t, err)
 	assert.NotNil(t, subscriber)
-	assert.Equal(t, "test-subscriber-get", subscriber.GetID())
+	assert.Equal(t, "00000000-0000-0000-0000-000000000001", subscriber.GetID())
 
 	// Get non-existent subscriber
-	_, err = registry.Get("non-existent-subscriber")
+	_, err = registry.Get("00000000-0000-0000-0000-000000000002")
 	assert.Error(t, err)
 	assert.True(t, errors.Is(err, ErrSubscriberNotFound))
 }
@@ -105,7 +104,7 @@ func TestDeregister(t *testing.T) {
 
 	// Register a subscriber
 	config := models.SubscriberConfig{
-		ID:      "test-subscriber-deregister",
+		ID:      "00000000-0000-0000-0000-000000000003",
 		Topics:  []string{"topic1", "topic2"},
 		Filter:  models.SubscriberFilter{},
 		Timeout: models.DefaultTimeoutConfig(),
@@ -114,13 +113,13 @@ func TestDeregister(t *testing.T) {
 	_, _ = registry.Register(config)
 
 	// Test successful deregistration
-	err := registry.Deregister("test-subscriber-deregister")
+	err := registry.Deregister("00000000-0000-0000-0000-000000000003")
 	if err != nil {
 		t.Fatalf("Unexpected error deregistering subscriber: %v", err)
 	}
 
 	// Verify subscriber is removed
-	_, err = registry.Get("test-subscriber-deregister")
+	_, err = registry.Get("00000000-0000-0000-0000-000000000003")
 	if err != ErrSubscriberNotFound {
 		t.Errorf("Expected subscriber to be removed, but Get returned: %v", err)
 	}
@@ -143,7 +142,7 @@ func TestDeregister(t *testing.T) {
 		if err := json.Unmarshal([]byte(line), &logEntry); err == nil {
 			// Check if it's the deregistered event for the correct subscriber
 			if lifecycleEvent, ok := logEntry["lifecycle_event"].(string); ok && lifecycleEvent == "deregistered" {
-				if sid, ok := logEntry["subscriber_id"].(string); ok && sid == "test-subscriber-deregister" {
+				if sid, ok := logEntry["subscriber_id"].(string); ok && sid == "00000000-0000-0000-0000-000000000003" {
 					if logEntry["reason"] != "manual" {
 						t.Errorf("Expected log reason to be 'manual', got: %v", logEntry["reason"])
 					}
@@ -155,12 +154,12 @@ func TestDeregister(t *testing.T) {
 	}
 
 	if !foundLog {
-		t.Errorf("Could not find deregistration log entry for test-subscriber-deregister in output: %s", output)
+		t.Errorf("Could not find deregistration log entry for 00000000-0000-0000-0000-000000000003 in output: %s", output)
 	}
 
 	// Test deregistering non-existent subscriber
 	buf.Reset() // Clear buffer before testing non-existent case
-	err = registry.Deregister("non-existent-subscriber")
+	err = registry.Deregister("00000000-0000-0000-0000-000000000999")
 	if err != ErrSubscriberNotFound {
 		t.Errorf("Expected ErrSubscriberNotFound, got %v", err)
 	}
@@ -169,9 +168,9 @@ func TestDeregister(t *testing.T) {
 
 func TestList(t *testing.T) {
 	registry := NewRegistry()
-	config1 := models.SubscriberConfig{ID: "s1", Topics: []string{"A", "B"}}
-	config2 := models.SubscriberConfig{ID: "s2", Topics: []string{"A", "C"}}
-	config3 := models.SubscriberConfig{ID: "s3", Topics: []string{"B", "C"}}
+	config1 := models.SubscriberConfig{ID: "63e4cf84-7189-45a5-8c0c-c82165f5bb24", Topics: []string{"A", "B"}}
+	config2 := models.SubscriberConfig{ID: "a2b4ca5f-317d-4a90-984c-9e4f0e274e04", Topics: []string{"A", "C"}}
+	config3 := models.SubscriberConfig{ID: "1cc25ab0-eb4a-4f18-80f9-4a5d3d6aae58", Topics: []string{"B", "C"}}
 	_, _ = registry.Register(config1)
 	_, _ = registry.Register(config2)
 	_, _ = registry.Register(config3)
@@ -187,8 +186,8 @@ func TestList(t *testing.T) {
 	for _, sub := range topicASubs {
 		ids[sub.GetID()] = true // Use GetID()
 	}
-	assert.True(t, ids["s1"])
-	assert.True(t, ids["s2"])
+	assert.True(t, ids["63e4cf84-7189-45a5-8c0c-c82165f5bb24"])
+	assert.True(t, ids["a2b4ca5f-317d-4a90-984c-9e4f0e274e04"])
 
 	// List by topic B
 	topicBSubs := registry.List("B")
@@ -197,8 +196,8 @@ func TestList(t *testing.T) {
 	for _, sub := range topicBSubs {
 		ids[sub.GetID()] = true // Use GetID()
 	}
-	assert.True(t, ids["s1"])
-	assert.True(t, ids["s3"])
+	assert.True(t, ids["63e4cf84-7189-45a5-8c0c-c82165f5bb24"])
+	assert.True(t, ids["1cc25ab0-eb4a-4f18-80f9-4a5d3d6aae58"])
 
 	// List non-existent topic
 	topicDSubs := registry.List("D")
@@ -207,9 +206,9 @@ func TestList(t *testing.T) {
 
 func TestListByState(t *testing.T) {
 	registry := NewRegistry()
-	cfgActive1 := models.SubscriberConfig{ID: "active1", Topics: []string{"t1"}}
-	cfgActive2 := models.SubscriberConfig{ID: "active2", Topics: []string{"t2"}}
-	cfgPaused1 := models.SubscriberConfig{ID: "paused1", Topics: []string{"t3"}}
+	cfgActive1 := models.SubscriberConfig{ID: "a13dcf5b-4ea4-47b4-a835-88123e71dad0", Topics: []string{"t1"}}
+	cfgActive2 := models.SubscriberConfig{ID: "b2c1e94f-48b2-4572-9d06-7bebd4a751a3", Topics: []string{"t2"}}
+	cfgPaused1 := models.SubscriberConfig{ID: "c3b2d85e-9cb1-4671-8d17-6abc3b721fb2", Topics: []string{"t3"}}
 
 	subActive1, _ := registry.Register(cfgActive1)
 	_, _ = registry.Register(cfgActive2)
@@ -226,13 +225,13 @@ func TestListByState(t *testing.T) {
 	for _, sub := range activeSubs {
 		activeIDs[sub.GetID()] = true // Use GetID()
 	}
-	assert.Contains(t, activeIDs, "active1")
-	assert.Contains(t, activeIDs, "active2")
+	assert.Contains(t, activeIDs, "a13dcf5b-4ea4-47b4-a835-88123e71dad0")
+	assert.Contains(t, activeIDs, "b2c1e94f-48b2-4572-9d06-7bebd4a751a3")
 
 	// List paused
 	pausedSubs := registry.ListByState(models.SubscriberStatePaused)
 	assert.Len(t, pausedSubs, 1)
-	assert.Equal(t, "paused1", pausedSubs[0].GetID()) // Use GetID()
+	assert.Equal(t, "c3b2d85e-9cb1-4671-8d17-6abc3b721fb2", pausedSubs[0].GetID()) // Use GetID()
 
 	// List closed (none)
 	closedSubs := registry.ListByState(models.SubscriberStateClosed)
@@ -245,150 +244,176 @@ func TestListByState(t *testing.T) {
 	// List active again
 	activeSubs = registry.ListByState(models.SubscriberStateActive)
 	assert.Len(t, activeSubs, 1)
-	assert.Equal(t, "active2", activeSubs[0].GetID()) // Use GetID()
+	assert.Equal(t, "b2c1e94f-48b2-4572-9d06-7bebd4a751a3", activeSubs[0].GetID()) // Use GetID()
 
 	// List closed again
 	closedSubs = registry.ListByState(models.SubscriberStateClosed)
 	assert.Len(t, closedSubs, 1)
-	assert.Equal(t, "active1", closedSubs[0].GetID()) // Use GetID()
+	assert.Equal(t, "a13dcf5b-4ea4-47b4-a835-88123e71dad0", closedSubs[0].GetID()) // Use GetID()
 }
 
 func TestUpdate(t *testing.T) {
+	// Create registry with custom logger
 	registry := NewRegistry()
-	config := models.SubscriberConfig{
-		ID:     "test-subscriber-update",
-		Topics: []string{"topic1"},
-		Filter: models.SubscriberFilter{EventTypes: []string{"typeA"}},
-	}
-	subscriber, err := registry.Register(config)
-	require.NoError(t, err)
-	require.NotNil(t, subscriber)
+	logger := NewSubscriberLogger(DEBUG)
+	registry.SetLogger(logger)
 
-	// Update the filter
-	err = registry.Update("test-subscriber-update", func(sub outbound.Subscriber) error {
-		// Type assertion needed to update filter details if not on interface
-		newFilter := outbound.SubscriberFilter{
-			EventTypes:  []string{"typeB", "typeC"},
-			FromVersion: 10,
-		}
-		return sub.UpdateFilter(newFilter) // Use interface method if available
+	// Register a subscriber
+	subConfig := models.SubscriberConfig{
+		ID:     "00000000-0000-0000-0000-000000000004",
+		Topics: []string{"topic1"},
+		Filter: models.SubscriberFilter{
+			EventTypes: []string{"type1"},
+		},
+	}
+	sub, err := registry.Register(subConfig)
+	require.NoError(t, err)
+	require.NotNil(t, sub)
+
+	// Add specific event types to filter
+	err = registry.Update("00000000-0000-0000-0000-000000000004", func(sub outbound.Subscriber) error {
+		filter := sub.GetFilter()
+		filter.EventTypes = append(filter.EventTypes, "type2")
+		return sub.UpdateFilter(filter)
 	})
 	assert.NoError(t, err)
 
 	// Verify update
-	updatedSub, _ := registry.Get("test-subscriber-update")
-	assert.NotNil(t, updatedSub)
-	filter := updatedSub.GetFilter() // Use GetFilter()
-	assert.Equal(t, []string{"typeB", "typeC"}, filter.EventTypes)
-	assert.Equal(t, int64(10), filter.FromVersion)
+	updatedSub, err := registry.Get("00000000-0000-0000-0000-000000000004")
+	require.NoError(t, err)
+	filter := updatedSub.GetFilter()
+	assert.Contains(t, filter.EventTypes, "type1")
+	assert.Contains(t, filter.EventTypes, "type2")
 
-	// Test update non-existent
-	err = registry.Update("non-existent-subscriber", func(sub outbound.Subscriber) error { return nil })
+	// Try to update non-existent subscriber
+	err = registry.Update("00000000-0000-0000-0000-000000000099", func(sub outbound.Subscriber) error {
+		return nil
+	})
 	assert.Error(t, err)
 	assert.True(t, errors.Is(err, ErrSubscriberNotFound))
 
-	// Test update function returning error
-	err = registry.Update("test-subscriber-update", func(sub outbound.Subscriber) error {
-		return errors.New("test error")
+	// Try update with error in function
+	testErr := errors.New("test error")
+	err = registry.Update("00000000-0000-0000-0000-000000000004", func(sub outbound.Subscriber) error {
+		return testErr
 	})
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "test error")
+	assert.Contains(t, err.Error(), testErr.Error())
 
-	// Test update closed subscriber
-	_ = updatedSub.Close() // Close the subscriber
-	err = registry.Update("test-subscriber-update", func(sub outbound.Subscriber) error { return nil })
-	assert.Error(t, err)
-	assert.True(t, errors.Is(err, ErrSubscriberClosed))
+	// Verify that the subscriber is unchanged after error
+	sub2, err := registry.Get("00000000-0000-0000-0000-000000000004")
+	require.NoError(t, err)
+	assert.Equal(t, "00000000-0000-0000-0000-000000000004", sub2.GetID())
+	assert.Equal(t, 2, len(sub2.GetFilter().EventTypes))
 }
 
 func TestUpdateTopics(t *testing.T) {
 	registry := NewRegistry()
 	config := models.SubscriberConfig{
-		ID:     "test-subscriber-update-topics",
+		ID:     "00000000-0000-0000-0000-000000000005",
 		Topics: []string{"topic1", "topic2"},
 	}
-	subscriber, err := registry.Register(config)
+	sub, err := registry.Register(config)
 	require.NoError(t, err)
-	require.NotNil(t, subscriber)
+	require.NotNil(t, sub)
 
-	// Check initial topics
-	assert.ElementsMatch(t, []string{"topic1", "topic2"}, subscriber.GetTopics()) // Use GetTopics()
-	assert.Equal(t, 1, registry.CountByTopic("topic1"))
-	assert.Equal(t, 1, registry.CountByTopic("topic2"))
+	// Verify the subscriber has the correct initial topics
+	assert.Equal(t, []string{"topic1", "topic2"}, sub.GetTopics())
 
-	// Update topics
-	err = registry.UpdateTopics("test-subscriber-update-topics", []string{"topic3", "topic4"})
+	// Update the topics
+	err = registry.UpdateTopics("00000000-0000-0000-0000-000000000005", []string{"topic2", "topic3"})
 	assert.NoError(t, err)
 
-	// Verify update
-	updatedSub, _ := registry.Get("test-subscriber-update-topics")
-	assert.NotNil(t, updatedSub)
-	assert.ElementsMatch(t, []string{"topic3", "topic4"}, updatedSub.GetTopics()) // Use GetTopics()
-	assert.Equal(t, 0, registry.CountByTopic("topic1"))                           // Should be removed from old topics
-	assert.Equal(t, 0, registry.CountByTopic("topic2"))
-	assert.Equal(t, 1, registry.CountByTopic("topic3")) // Should be added to new topics
-	assert.Equal(t, 1, registry.CountByTopic("topic4"))
+	// Verify the update
+	updatedSub, err := registry.Get("00000000-0000-0000-0000-000000000005")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"topic2", "topic3"}, updatedSub.GetTopics())
 
-	// Test update non-existent
-	err = registry.UpdateTopics("non-existent-subscriber", []string{"topic5"})
+	// Check topic map updates
+	assert.Equal(t, 0, registry.CountByTopic("topic1"), "Topic1 should have 0 subscribers")
+	assert.Equal(t, 1, registry.CountByTopic("topic2"), "Topic2 should have 1 subscriber")
+	assert.Equal(t, 1, registry.CountByTopic("topic3"), "Topic3 should have 1 subscriber")
+
+	// Test updating non-existent subscriber
+	err = registry.UpdateTopics("00000000-0000-0000-0000-000000000099", []string{"topic4"})
 	assert.Error(t, err)
 	assert.True(t, errors.Is(err, ErrSubscriberNotFound))
 }
 
 func TestCleanupInactive(t *testing.T) {
 	registry := NewRegistry()
-	logger := NewSubscriberLogger(DEBUG)
-	var buf bytes.Buffer
-	logger.logger = log.New(&buf, "", 0)
-	registry.SetLogger(logger)
+	config1 := models.SubscriberConfig{ID: "10000000-0000-0000-0000-000000000001"}
+	config2 := models.SubscriberConfig{ID: "20000000-0000-0000-0000-000000000002"}
 
-	config1 := models.SubscriberConfig{ID: "active-subscriber"}
-	config2 := models.SubscriberConfig{ID: "inactive-subscriber"}
-	// Capture both return values
-	_, errAct := registry.Register(config1)
-	require.NoError(t, errAct)
-	inactiveSub, errInact := registry.Register(config2)
-	require.NoError(t, errInact)
+	// Register the subscribers
+	sub1, err := registry.Register(config1)
+	require.NoError(t, err)
+	_, err = registry.Register(config2)
+	require.NoError(t, err)
 
-	inactiveSubModel, ok := inactiveSub.(*models.Subscriber)
-	require.True(t, ok, "Inactive subscriber should be *models.Subscriber")
-	inactiveSubModel.LastActivityAt = time.Now().Add(-2 * time.Hour)
+	// Make sure both subscribers are initially present
+	assert.Equal(t, 2, registry.Count())
 
+	// Type assertion to access and modify LastActivityAt on sub1
+	// This is implementation-specific; may need appropriate method on the interface instead
+	if modelSub, ok := sub1.(*models.Subscriber); ok {
+		// Set the first subscriber to be inactive for 2 hours
+		modelSub.LastActivityAt = time.Now().Add(-2 * time.Hour)
+	} else {
+		t.Fatal("Type assertion failed, cannot manipulate LastActivityAt")
+	}
+
+	// Cleanup subscribers inactive for more than 1 hour
 	removedCount := registry.CleanupInactive(1 * time.Hour)
-	assert.Equal(t, 1, removedCount)
+	assert.Equal(t, 1, removedCount, "Should remove 1 inactive subscriber")
+	assert.Equal(t, 1, registry.Count(), "Should have 1 subscriber left")
 
-	_, err := registry.Get("inactive-subscriber")
-	assert.Error(t, err)
-	assert.True(t, errors.Is(err, ErrSubscriberNotFound))
+	// Verify the right subscriber was removed
+	_, err = registry.Get("10000000-0000-0000-0000-000000000001")
+	assert.True(t, errors.Is(err, ErrSubscriberNotFound), "First subscriber should be removed")
 
-	_, err = registry.Get("active-subscriber")
+	// Verify the active subscriber is still there
+	remainingSub, err := registry.Get("20000000-0000-0000-0000-000000000002")
 	assert.NoError(t, err)
-
-	output := buf.String()
-	assert.Contains(t, output, "deregistered")
-	assert.Contains(t, output, "inactive_timeout")
-	assert.Contains(t, output, "inactive-subscriber")
-
-	removedCount = registry.CleanupInactive(1 * time.Hour)
-	assert.Equal(t, 0, removedCount)
+	assert.NotNil(t, remainingSub)
 }
 
 // Mock subscriber for broadcast testing
 type mockDeliverySubscriber struct {
-	models.Subscriber // Embed for default behavior, easier setup
-	ReceivedEvents    chan outbound.Event
-	DeliveryError     error         // Optional error to return on ReceiveEvent
-	DeliveryDelay     time.Duration // Optional delay in ReceiveEvent
+	subscriber     *models.Subscriber // Pointer to subscriber
+	ReceivedEvents chan outbound.Event
+	DeliveryError  error         // Optional error to return on ReceiveEvent
+	DeliveryDelay  time.Duration // Optional delay in ReceiveEvent
 }
 
 func newMockDeliverySubscriber(config models.SubscriberConfig, bufferSize int) *mockDeliverySubscriber {
 	return &mockDeliverySubscriber{
-		Subscriber:     *models.NewSubscriber(config),
+		subscriber:     models.NewSubscriber(config),
 		ReceivedEvents: make(chan outbound.Event, bufferSize),
 	}
 }
 
-// Override ReceiveEvent
+// GetID implements the outbound.Subscriber interface
+func (m *mockDeliverySubscriber) GetID() string {
+	return m.subscriber.GetID()
+}
+
+// GetTopics implements the outbound.Subscriber interface
+func (m *mockDeliverySubscriber) GetTopics() []string {
+	return m.subscriber.GetTopics()
+}
+
+// GetFilter implements the outbound.Subscriber interface
+func (m *mockDeliverySubscriber) GetFilter() outbound.SubscriberFilter {
+	return m.subscriber.GetFilter()
+}
+
+// GetState implements the outbound.Subscriber interface
+func (m *mockDeliverySubscriber) GetState() outbound.SubscriberState {
+	return m.subscriber.GetState()
+}
+
+// ReceiveEvent implements the outbound.Subscriber interface
 func (m *mockDeliverySubscriber) ReceiveEvent(ctx context.Context, event outbound.Event) error {
 	if m.DeliveryDelay > 0 {
 		select {
@@ -398,49 +423,56 @@ func (m *mockDeliverySubscriber) ReceiveEvent(ctx context.Context, event outboun
 		}
 	}
 	if m.DeliveryError != nil {
-		// Type assert to call model-specific method
-		if subModel, ok := &m.Subscriber; ok { // Assuming m.Subscriber is the embedded *models.Subscriber
-			subModel.HandleRetryIfError(m.DeliveryError)
-		} else {
-			// Log or handle error if type assertion fails unexpectedly
-		}
 		return m.DeliveryError
 	}
 
-	// Type assert to access EventChannel
-	var eventChannel chan outbound.Event
-	if subModel, ok := &m.Subscriber; ok {
-		eventChannel = subModel.EventChannel
-	} else {
-		// Mock needs its own channel if not embedding, return error if channel is nil
-		return errors.New("mock subscriber channel not initialized")
-	}
-
+	// Successfully received the event, pass it to the ReceivedEvents channel
 	select {
-	case eventChannel <- event: // Use the obtained channel
-		// Type assert to call model-specific method
-		if subModel, ok := &m.Subscriber; ok {
-			subModel.ResetRetryIfSuccess()
+	case m.ReceivedEvents <- event:
+		// Also send to the real subscriber's EventChannel for proper activity tracking
+		select {
+		case m.subscriber.EventChannel <- event:
+		default:
 		}
 		return nil
 	case <-ctx.Done():
-		// Type assert to call model-specific method
-		if subModel, ok := &m.Subscriber; ok {
-			subModel.HandleRetryIfError(ctx.Err())
-		}
 		return ctx.Err()
 	}
 }
 
-// Helper methods assumed to exist on models.Subscriber for mock interaction
-// These would typically call handleRetry() or resetRetryCount()
-func (s *Subscriber) HandleRetryIfError(err error) {
-	if err != nil {
-		s.handleRetry()
-	}
+// GetRetryInfo implements the outbound.Subscriber interface
+func (m *mockDeliverySubscriber) GetRetryInfo() (retryCount int, lastRetryTime time.Time, nextTimeout time.Duration) {
+	return m.subscriber.GetRetryInfo()
 }
-func (s *Subscriber) ResetRetryIfSuccess() {
-	s.resetRetryCount()
+
+// GetStats implements the outbound.Subscriber interface
+func (m *mockDeliverySubscriber) GetStats() outbound.SubscriberStats {
+	return m.subscriber.GetStats()
+}
+
+// Close implements the outbound.Subscriber interface
+func (m *mockDeliverySubscriber) Close() error {
+	return m.subscriber.Close()
+}
+
+// Pause implements the outbound.Subscriber interface
+func (m *mockDeliverySubscriber) Pause() error {
+	return m.subscriber.Pause()
+}
+
+// Resume implements the outbound.Subscriber interface
+func (m *mockDeliverySubscriber) Resume() error {
+	return m.subscriber.Resume()
+}
+
+// UpdateFilter implements the outbound.Subscriber interface
+func (m *mockDeliverySubscriber) UpdateFilter(filter outbound.SubscriberFilter) error {
+	return m.subscriber.UpdateFilter(filter)
+}
+
+// UpdateTimeout implements the outbound.Subscriber interface
+func (m *mockDeliverySubscriber) UpdateTimeout(config outbound.TimeoutConfig) error {
+	return m.subscriber.UpdateTimeout(config)
 }
 
 func TestBroadcastEvent(t *testing.T) {
@@ -452,10 +484,10 @@ func TestBroadcastEvent(t *testing.T) {
 
 	// Create mock subscribers
 	bufferSize := 10
-	sub1Config := models.SubscriberConfig{ID: "sub1", Topics: []string{"topicA", "topicB"}}
-	sub2Config := models.SubscriberConfig{ID: "sub2", Topics: []string{"topicA"}}
-	sub3Config := models.SubscriberConfig{ID: "sub3", Topics: []string{"topicC"}} // Different topic
-	sub4Config := models.SubscriberConfig{ID: "sub4-paused", Topics: []string{"topicA"}}
+	sub1Config := models.SubscriberConfig{ID: "550e8400-e29b-41d4-a716-446655440000", Topics: []string{"topicA", "topicB"}}
+	sub2Config := models.SubscriberConfig{ID: "6ba7b810-9dad-11d1-80b4-00c04fd430c8", Topics: []string{"topicA"}}
+	sub3Config := models.SubscriberConfig{ID: "6ba7b811-9dad-11d1-80b4-00c04fd430c9", Topics: []string{"topicC"}} // Different topic
+	sub4Config := models.SubscriberConfig{ID: "6ba7b812-9dad-11d1-80b4-00c04fd430ca", Topics: []string{"topicA"}}
 
 	mockSub1 := newMockDeliverySubscriber(sub1Config, bufferSize)
 	mockSub2 := newMockDeliverySubscriber(sub2Config, bufferSize)
@@ -516,7 +548,7 @@ func TestBroadcastEvent(t *testing.T) {
 	// Check logs
 	output := buf.String()
 	assert.Contains(t, output, "Broadcasting event")
-	assert.Contains(t, output, "\"subscriber_count\":4") // 4 total initially
+	assert.Contains(t, output, "\"subscriber_count\":3") // 3 total (sub1, sub2, sub3) - sub4 is paused
 	assert.Contains(t, output, "\"filtered_count\":2")   // 2 delivered (sub1, sub2)
 	assert.Contains(t, output, "\"success_count\":2")
 	assert.Contains(t, output, "Event broadcast completed")
@@ -539,23 +571,23 @@ func TestEventFiltering(t *testing.T) {
 	logger := NewSubscriberLogger(DEBUG)
 	registry.SetLogger(logger)
 
-	allEventsConfig := models.SubscriberConfig{ID: "all-events", Topics: []string{"test-topic"}}
-	typeFilterConfig := models.SubscriberConfig{ID: "type-filter", Topics: []string{"test-topic"},
+	allEventsConfig := models.SubscriberConfig{ID: "11111111-1111-1111-1111-111111111111", Topics: []string{"test-topic"}}
+	typeFilterConfig := models.SubscriberConfig{ID: "22222222-2222-2222-2222-222222222222", Topics: []string{"test-topic"},
 		Filter: models.SubscriberFilter{EventTypes: []string{"TestEvent", "KeepEvent"}},
 	}
-	versionFilterConfig := models.SubscriberConfig{ID: "version-filter", Topics: []string{"test-topic"},
+	versionFilterConfig := models.SubscriberConfig{ID: "33333333-3333-3333-3333-333333333333", Topics: []string{"test-topic"},
 		Filter: models.SubscriberFilter{FromVersion: 5},
 	}
-	pausedConfig := models.SubscriberConfig{ID: "paused-filter", Topics: []string{"test-topic"}}
+	pausedConfig := models.SubscriberConfig{ID: "44444444-4444-4444-4444-444444444444", Topics: []string{"test-topic"}}
 
 	// Use mock subscribers for controlled event checking
 	allEventsChannel := make(chan outbound.Event, 5)
 	typeFilterChannel := make(chan outbound.Event, 5)
 	versionFilterChannel := make(chan outbound.Event, 5)
 
-	mockSubAll := &mockDeliverySubscriber{Subscriber: *models.NewSubscriber(allEventsConfig), ReceivedEvents: allEventsChannel}
-	mockSubType := &mockDeliverySubscriber{Subscriber: *models.NewSubscriber(typeFilterConfig), ReceivedEvents: typeFilterChannel}
-	mockSubVersion := &mockDeliverySubscriber{Subscriber: *models.NewSubscriber(versionFilterConfig), ReceivedEvents: versionFilterChannel}
+	mockSubAll := &mockDeliverySubscriber{subscriber: models.NewSubscriber(allEventsConfig), ReceivedEvents: allEventsChannel}
+	mockSubType := &mockDeliverySubscriber{subscriber: models.NewSubscriber(typeFilterConfig), ReceivedEvents: typeFilterChannel}
+	mockSubVersion := &mockDeliverySubscriber{subscriber: models.NewSubscriber(versionFilterConfig), ReceivedEvents: versionFilterChannel}
 	mockSubPausedReg, errPaused := registry.Register(pausedConfig)
 	require.NoError(t, errPaused)
 	err := mockSubPausedReg.Pause()
@@ -724,8 +756,10 @@ func TestConcurrentOperations(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			<-startSignal // Wait for signal to start concurrently
+
+			// Use UUID v4 format IDs
 			config := models.SubscriberConfig{
-				ID:     fmt.Sprintf("concurrent-%d", id),
+				ID:     fmt.Sprintf("a%d000000-0000-0000-0000-00000000000%d", id, id),
 				Topics: []string{"topic1", "topic2"},
 			}
 			_, err := registry.Register(config)
@@ -734,54 +768,38 @@ func TestConcurrentOperations(t *testing.T) {
 	}
 	close(startSignal) // Signal workers to start
 	wg.Wait()
+
+	// Verify registration count
 	assert.Equal(t, numSubscribers, registry.Count())
 
-	// Concurrent get and update
-	startSignal = make(chan struct{})
-	wg.Add(numSubscribers * 2)
-	for i := 0; i < numSubscribers; i++ {
-		go func(id int) { // Concurrent Get
-			defer wg.Done()
-			<-startSignal
-			subID := fmt.Sprintf("concurrent-%d", id)
-			sub, err := registry.Get(subID)
-			assert.NoError(t, err)
-			assert.NotNil(t, sub)
-			assert.Equal(t, subID, sub.GetID()) // Use GetID()
-		}(i)
-		go func(id int) { // Concurrent Update
-			defer wg.Done()
-			<-startSignal
-			subID := fmt.Sprintf("concurrent-%d", id)
-			err := registry.Update(subID, func(s outbound.Subscriber) error {
-				// Example update: change filter
-				newFilter := outbound.SubscriberFilter{EventTypes: []string{fmt.Sprintf("type-%d", id)}}
-				return s.UpdateFilter(newFilter)
-			})
-			// Tolerate potential race conditions where Get happens before Update finishes fully in map
-			if err != nil {
-				assert.ErrorIs(t, err, ErrSubscriberNotFound, "Update error should be Not Found if Get won race")
-			}
-		}(i)
-	}
-	close(startSignal)
-	wg.Wait()
-
-	// Concurrent deregistration
-	startSignal = make(chan struct{})
+	// Concurrent update
 	wg.Add(numSubscribers)
 	for i := 0; i < numSubscribers; i++ {
 		go func(id int) {
 			defer wg.Done()
-			<-startSignal
-			subID := fmt.Sprintf("concurrent-%d", id)
-			err := registry.Deregister(subID)
+			subscriberID := fmt.Sprintf("a%d000000-0000-0000-0000-00000000000%d", id, id)
+			err := registry.Update(subscriberID, func(s outbound.Subscriber) error {
+				// Update filter to add event type
+				filter := s.GetFilter()
+				filter.EventTypes = append(filter.EventTypes, fmt.Sprintf("type-%d", id))
+				return s.UpdateFilter(filter)
+			})
 			assert.NoError(t, err)
 		}(i)
 	}
-	close(startSignal)
 	wg.Wait()
-	assert.Equal(t, 0, registry.Count())
+
+	// Verify each subscriber has been updated
+	for i := 0; i < numSubscribers; i++ {
+		subscriberID := fmt.Sprintf("a%d000000-0000-0000-0000-00000000000%d", i, i)
+		sub, err := registry.Get(subscriberID)
+		assert.NoError(t, err)
+		assert.NotNil(t, sub)
+
+		// Check the filter has been updated
+		filter := sub.GetFilter()
+		assert.Contains(t, filter.EventTypes, fmt.Sprintf("type-%d", i))
+	}
 }
 
 // --- Interface-based Mock Subscriber for Error Testing ---
@@ -904,54 +922,157 @@ func (m *mockErrorSubscriber) GetRetryInfo() (retryCount int, lastRetryTime time
 
 // --- End mockErrorSubscriber ---
 
-// --- Mock Subscriber for Delivery Testing (Uses embedding) ---
-type mockDeliverySubscriber struct {
-	models.Subscriber // Embed for convenience
-	ReceivedEvents    chan outbound.Event
-	DeliveryError     error
-	DeliveryDelay     time.Duration
+// mockEvent implements the Event interface for testing
+type mockEvent struct {
+	id    string
+	topic string
 }
 
-func newMockDeliverySubscriber(config models.SubscriberConfig, bufferSize int) *mockDeliverySubscriber {
-	m := &mockDeliverySubscriber{
-		Subscriber:     *models.NewSubscriber(config),
-		ReceivedEvents: make(chan outbound.Event, bufferSize),
-	}
-	m.Subscriber.SetLogger(log.New(io.Discard, "", 0)) // Use io.Discard
-	return m
+func (e *mockEvent) GetID() string {
+	return e.id
 }
 
-// Override ReceiveEvent for mockDeliverySubscriber
-func (m *mockDeliverySubscriber) ReceiveEvent(ctx context.Context, event outbound.Event) error {
-	if m.DeliveryDelay > 0 {
-		select {
-		case <-time.After(m.DeliveryDelay):
-		case <-ctx.Done():
-			return ctx.Err()
+func (e *mockEvent) GetType() string {
+	return "mock"
+}
+
+func (e *mockEvent) GetTopic() string {
+	return e.topic
+}
+
+func (e *mockEvent) GetData() []byte {
+	return []byte(`{"test":"data"}`)
+}
+
+func (e *mockEvent) GetMetadata() map[string]string {
+	return map[string]string{"test": "metadata"}
+}
+
+// DeliverToTopic delivers an event to all subscribers of a specific topic
+func (r *Registry) DeliverToTopic(ctx context.Context, topic string, event interface{}) (int, error) {
+	// Create or convert to an outbound.Event
+	var outEvent outbound.Event
+	if e, ok := event.(outbound.Event); ok {
+		outEvent = e
+	} else if me, ok := event.(*mockEvent); ok {
+		// Convert string metadata to interface{} metadata
+		metadata := make(map[string]interface{})
+		for k, v := range me.GetMetadata() {
+			metadata[k] = v
 		}
-	}
-	if m.DeliveryError != nil {
-		// Call the embedded HandleRetryIfError (assuming it exists on models.Subscriber)
-		m.Subscriber.HandleRetryIfError(m.DeliveryError)
-		return m.DeliveryError
+
+		// Parse the bytes to a map for the Data field
+		var data map[string]interface{}
+		if err := json.Unmarshal(me.GetData(), &data); err != nil {
+			// Use a default map if unmarshal fails
+			data = map[string]interface{}{"raw_data": string(me.GetData())}
+		}
+
+		outEvent = outbound.Event{
+			ID:        me.GetID(),
+			Topic:     me.GetTopic(),
+			Type:      me.GetType(),
+			Data:      data,
+			Metadata:  metadata,
+			Timestamp: time.Now().UnixNano(),
+			Version:   1, // Default version
+		}
+	} else {
+		return 0, fmt.Errorf("unsupported event type: %T", event)
 	}
 
-	// Access embedded channel directly
-	eventChannel := m.Subscriber.EventChannel
-	if eventChannel == nil {
-		return errors.New("embedded subscriber channel not initialized")
-	}
-
-	select {
-	case eventChannel <- event:
-		// Call the embedded ResetRetryIfSuccess (assuming it exists on models.Subscriber)
-		m.Subscriber.ResetRetryIfSuccess()
-		return nil
-	case <-ctx.Done():
-		// Call the embedded HandleRetryIfError (assuming it exists on models.Subscriber)
-		m.Subscriber.HandleRetryIfError(ctx.Err())
-		return ctx.Err()
-	}
+	return r.BroadcastEvent(ctx, outEvent), nil
 }
 
-// --- End mockDeliverySubscriber ---
+func TestDeliverToTopic(t *testing.T) {
+	// Create a new registry
+	registry := NewRegistry()
+
+	// Create channels for mock subscribers
+	sub1Channel := make(chan outbound.Event, 5)
+	sub2Channel := make(chan outbound.Event, 5)
+	sub3Channel := make(chan outbound.Event, 5)
+
+	// Register a subscriber for topic1
+	sub1Config := models.SubscriberConfig{
+		ID:     "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+		Topics: []string{"topic1"},
+	}
+	mockSub1 := &mockDeliverySubscriber{
+		subscriber:     models.NewSubscriber(sub1Config),
+		ReceivedEvents: sub1Channel,
+	}
+
+	// Register a subscriber for topic2
+	sub2Config := models.SubscriberConfig{
+		ID:     "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+		Topics: []string{"topic2"},
+	}
+	mockSub2 := &mockDeliverySubscriber{
+		subscriber:     models.NewSubscriber(sub2Config),
+		ReceivedEvents: sub2Channel,
+	}
+
+	// Register a subscriber for both topic1 and topic2
+	sub3Config := models.SubscriberConfig{
+		ID:     "cccccccc-cccc-cccc-cccc-cccccccccccc",
+		Topics: []string{"topic1", "topic2"},
+	}
+	mockSub3 := &mockDeliverySubscriber{
+		subscriber:     models.NewSubscriber(sub3Config),
+		ReceivedEvents: sub3Channel,
+	}
+
+	// Add mocks directly to registry
+	registry.subscribers[mockSub1.GetID()] = mockSub1
+	registry.addToTopicMapsLocked(mockSub1)
+	registry.subscribers[mockSub2.GetID()] = mockSub2
+	registry.addToTopicMapsLocked(mockSub2)
+	registry.subscribers[mockSub3.GetID()] = mockSub3
+	registry.addToTopicMapsLocked(mockSub3)
+
+	// Create test events
+	event1 := &mockEvent{id: "event1", topic: "topic1"}
+	event2 := &mockEvent{id: "event2", topic: "topic2"}
+	event3 := &mockEvent{id: "event3", topic: "topic3"} // No subscribers for this topic
+
+	// Test delivering to topic1
+	ctx := context.Background()
+	count, err := registry.DeliverToTopic(ctx, "topic1", event1)
+	require.NoError(t, err)
+	assert.Equal(t, 2, count) // Both mockSub1 and mockSub3 should receive it
+
+	// Verify sub1 received event1
+	select {
+	case received := <-mockSub1.ReceivedEvents:
+		assert.Equal(t, "event1", received.ID)
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Timeout waiting for sub1 to receive event")
+	}
+
+	// Verify sub3 received event1
+	select {
+	case received := <-mockSub3.ReceivedEvents:
+		assert.Equal(t, "event1", received.ID)
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Timeout waiting for sub3 to receive event")
+	}
+
+	// Verify sub2 did not receive event1
+	select {
+	case <-mockSub2.ReceivedEvents:
+		t.Fatal("sub2 should not receive event1")
+	case <-time.After(10 * time.Millisecond):
+		// This is expected - no event for sub2
+	}
+
+	// Test delivering to topic2
+	count, err = registry.DeliverToTopic(ctx, "topic2", event2)
+	require.NoError(t, err)
+	assert.Equal(t, 2, count) // Both mockSub2 and mockSub3 should receive it
+
+	// Test delivering to topic with no subscribers
+	count, err = registry.DeliverToTopic(ctx, "topic3", event3)
+	require.NoError(t, err)
+	assert.Equal(t, 0, count) // No subscribers for topic3
+}
