@@ -3,6 +3,7 @@ package models
 
 import (
 	"context"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -168,6 +169,9 @@ type Subscriber struct {
 	// Statistics
 	stats subscriberStats
 
+	// Logger for subscriber operations
+	logger *log.Logger
+
 	// Mutex for thread safety
 	mu sync.RWMutex
 }
@@ -247,19 +251,33 @@ func NewSubscriber(config SubscriberConfig) *Subscriber {
 		CreatedAt:      now,
 		LastActivityAt: now,
 		stats:          subscriberStats{},
+		logger:         log.New(log.Writer(), "[SUBSCRIBER "+config.ID+"] ", log.LstdFlags),
 		mu:             sync.RWMutex{},
 	}
 }
 
+// SetLogger sets the logger for the subscriber
+func (s *Subscriber) SetLogger(logger *log.Logger) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.logger = logger
+}
+
 // ReceiveEvent implements the outbound.Subscriber interface
 func (s *Subscriber) ReceiveEvent(ctx context.Context, event outbound.Event) error {
+	startTime := time.Now()
+
 	s.mu.RLock()
 	state := s.State
+	logger := s.logger
 	s.mu.RUnlock()
 
 	if state != SubscriberStateActive {
 		// Increment dropped events count if not active
 		atomic.AddInt64(&s.stats.eventsDropped, 1)
+		if logger != nil {
+			logger.Printf("Event %s dropped, subscriber is not active (state: %s)", event.ID, state)
+		}
 		return nil
 	}
 
@@ -271,15 +289,24 @@ func (s *Subscriber) ReceiveEvent(ctx context.Context, event outbound.Event) err
 	case s.EventChannel <- event:
 		// Event sent successfully
 		s.recordEventDelivery()
+		deliveryTime := time.Since(startTime)
 		// Reset retry count on successful delivery
 		s.resetRetryCount()
+		if logger != nil {
+			logger.Printf("Event %s delivered successfully in %v", event.ID, deliveryTime)
+		}
 		return nil
 	case <-ctx.Done():
 		// Context cancelled or timed out
 		atomic.AddInt64(&s.stats.timeoutCount, 1)
 		s.recordDeliveryError()
+		deliveryTime := time.Since(startTime)
 		// Increment retry count and update timeout
 		s.handleRetry()
+		if logger != nil {
+			logger.Printf("Event %s delivery timed out after %v, retry count: %d, next timeout: %v",
+				event.ID, deliveryTime, s.Timeout.CurrentRetryCount, s.Timeout.CurrentTimeout)
+		}
 		return ctx.Err()
 	}
 }
@@ -345,8 +372,12 @@ func (s *Subscriber) Pause() error {
 	// Always update LastActivityAt, even if state doesn't change
 	s.LastActivityAt = time.Now()
 
+	oldState := s.State
 	if s.State != SubscriberStateClosed {
 		s.State = SubscriberStatePaused
+		if s.logger != nil && oldState != s.State {
+			s.logger.Printf("Subscriber state changed: %s -> %s", oldState, s.State)
+		}
 	}
 	return nil
 }
@@ -359,8 +390,12 @@ func (s *Subscriber) Resume() error {
 	// Always update LastActivityAt, even if state doesn't change
 	s.LastActivityAt = time.Now()
 
+	oldState := s.State
 	if s.State != SubscriberStateClosed {
 		s.State = SubscriberStateActive
+		if s.logger != nil && oldState != s.State {
+			s.logger.Printf("Subscriber state changed: %s -> %s", oldState, s.State)
+		}
 	}
 	return nil
 }
@@ -373,9 +408,14 @@ func (s *Subscriber) Close() error {
 	// Always update LastActivityAt
 	s.LastActivityAt = time.Now()
 
+	oldState := s.State
 	if s.State != SubscriberStateClosed {
 		s.State = SubscriberStateClosed
 		close(s.EventChannel)
+		if s.logger != nil {
+			s.logger.Printf("Subscriber state changed: %s -> %s", oldState, s.State)
+			s.logger.Printf("Subscriber closed after %v of activity", time.Since(s.CreatedAt))
+		}
 	}
 	return nil
 }
@@ -435,18 +475,30 @@ func (s *Subscriber) handleRetry() {
 	// Increment retry count
 	s.Timeout.CurrentRetryCount++
 
+	if s.logger != nil {
+		s.logger.Printf("Handling retry, count: %d/%d", s.Timeout.CurrentRetryCount, s.Timeout.MaxRetries)
+	}
+
 	// Check if we've reached max retries
 	if s.Timeout.CurrentRetryCount > s.Timeout.MaxRetries {
 		// Don't increase timeout further, we'll enter cooldown period
+		if s.logger != nil {
+			s.logger.Printf("Maximum retry count exceeded, entering cooldown period for %v", s.Timeout.CooldownPeriod)
+		}
 		return
 	}
 
 	// Calculate new timeout with backoff, but don't exceed max timeout
+	oldTimeout := s.Timeout.CurrentTimeout
 	newTimeout := time.Duration(float64(s.Timeout.CurrentTimeout) * s.Timeout.BackoffMultiplier)
 	if newTimeout > s.Timeout.MaxTimeout {
 		newTimeout = s.Timeout.MaxTimeout
 	}
 	s.Timeout.CurrentTimeout = newTimeout
+
+	if s.logger != nil {
+		s.logger.Printf("Retry timeout increased: %v -> %v", oldTimeout, s.Timeout.CurrentTimeout)
+	}
 }
 
 // resetRetryCount resets retry count and timeout after successful delivery
@@ -456,8 +508,16 @@ func (s *Subscriber) resetRetryCount() {
 
 	// Only reset if we've had retries or in cooldown
 	if s.Timeout.CurrentRetryCount > 0 {
+		oldRetryCount := s.Timeout.CurrentRetryCount
+		oldTimeout := s.Timeout.CurrentTimeout
+
 		s.Timeout.CurrentRetryCount = 0
 		s.Timeout.CurrentTimeout = s.Timeout.InitialTimeout
+
+		if s.logger != nil {
+			s.logger.Printf("Retry count reset: %d -> 0, timeout reset: %v -> %v",
+				oldRetryCount, oldTimeout, s.Timeout.InitialTimeout)
+		}
 	}
 }
 
@@ -515,8 +575,16 @@ func (s *Subscriber) resetAfterCooldown() bool {
 		cooldownEnds := s.Timeout.LastRetryTime.Add(s.Timeout.CooldownPeriod)
 		if time.Now().After(cooldownEnds) {
 			// Cooldown period elapsed, reset
+			oldRetryCount := s.Timeout.CurrentRetryCount
+			oldTimeout := s.Timeout.CurrentTimeout
+
 			s.Timeout.CurrentRetryCount = 0
 			s.Timeout.CurrentTimeout = s.Timeout.InitialTimeout
+
+			if s.logger != nil {
+				s.logger.Printf("Cooldown period ended, retry count reset: %d -> 0, timeout reset: %v -> %v",
+					oldRetryCount, oldTimeout, s.Timeout.InitialTimeout)
+			}
 			return true
 		}
 	}

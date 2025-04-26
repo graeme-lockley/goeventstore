@@ -150,15 +150,25 @@ func (wp *workerPool) shutdown(timeout time.Duration) {
 	}
 }
 
-// Registry manages a thread-safe collection of subscribers
+// Registry is a thread-safe registry of subscribers
 type Registry struct {
-	mu               sync.RWMutex
-	subscribers      map[string]*models.Subscriber
+	// All subscribers, keyed by subscriber ID
+	subscribers map[string]*models.Subscriber
+
+	// Subscribers by topic, for efficient event delivery
 	topicSubscribers map[string]map[string]*models.Subscriber
-	workerPool       *workerPool
+
+	// Worker pool for event delivery
+	workerPool *workerPool
+
+	// Logger for registry operations
+	logger *SubscriberLogger
+
+	// Mutex for thread safety
+	mu sync.RWMutex
 }
 
-// NewRegistry creates a new empty registry with default worker pool configuration
+// NewRegistry creates a new registry with default configuration
 func NewRegistry() *Registry {
 	return NewRegistryWithConfig(DefaultWorkerPoolConfig())
 }
@@ -169,7 +179,15 @@ func NewRegistryWithConfig(poolConfig WorkerPoolConfig) *Registry {
 		subscribers:      make(map[string]*models.Subscriber),
 		topicSubscribers: make(map[string]map[string]*models.Subscriber),
 		workerPool:       newWorkerPool(poolConfig),
+		logger:           NewSubscriberLogger(INFO),
 	}
+}
+
+// SetLogger sets the logger for the registry
+func (r *Registry) SetLogger(logger *SubscriberLogger) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.logger = logger
 }
 
 // Register adds a new subscriber to the registry
@@ -181,6 +199,10 @@ func (r *Registry) Register(config models.SubscriberConfig) (*models.Subscriber,
 	if config.ID == "" {
 		config.ID = uuid.New().String()
 	} else if _, exists := r.subscribers[config.ID]; exists {
+		if r.logger != nil {
+			r.logger.Error(context.Background(), "Failed to register subscriber: ID already exists",
+				map[string]interface{}{"subscriber_id": config.ID})
+		}
 		return nil, ErrSubscriberAlreadyExists
 	}
 
@@ -193,6 +215,17 @@ func (r *Registry) Register(config models.SubscriberConfig) (*models.Subscriber,
 	// Add to topic-based maps
 	r.addToTopicMaps(subscriber)
 
+	if r.logger != nil {
+		r.logger.LogLifecycleEvent(context.Background(), subscriber.ID, "registered",
+			map[string]interface{}{
+				"topics":        subscriber.Topics,
+				"filter":        subscriber.Filter,
+				"buffer_size":   subscriber.BufferSize,
+				"timeout":       subscriber.Timeout,
+				"creation_time": subscriber.CreatedAt,
+			})
+	}
+
 	return subscriber, nil
 }
 
@@ -203,6 +236,10 @@ func (r *Registry) Get(id string) (*models.Subscriber, error) {
 
 	subscriber, exists := r.subscribers[id]
 	if !exists {
+		if r.logger != nil {
+			r.logger.Warn(context.Background(), "Subscriber not found",
+				map[string]interface{}{"subscriber_id": id})
+		}
 		return nil, ErrSubscriberNotFound
 	}
 
@@ -261,16 +298,32 @@ func (r *Registry) Update(id string, updateFn func(*models.Subscriber) error) er
 
 	subscriber, exists := r.subscribers[id]
 	if !exists {
+		if r.logger != nil {
+			r.logger.Warn(context.Background(), "Cannot update: subscriber not found",
+				map[string]interface{}{"subscriber_id": id})
+		}
 		return ErrSubscriberNotFound
 	}
 
 	// Apply the update function
 	if err := updateFn(subscriber); err != nil {
+		if r.logger != nil {
+			r.logger.Error(context.Background(), "Error updating subscriber",
+				map[string]interface{}{
+					"subscriber_id": id,
+					"error":         err.Error(),
+				})
+		}
 		return err
 	}
 
 	// Update LastActivityAt timestamp
 	subscriber.LastActivityAt = time.Now()
+
+	if r.logger != nil {
+		r.logger.Info(context.Background(), "Subscriber updated",
+			map[string]interface{}{"subscriber_id": id})
+	}
 
 	return nil
 }
@@ -282,8 +335,14 @@ func (r *Registry) UpdateTopics(id string, newTopics []string) error {
 
 	subscriber, exists := r.subscribers[id]
 	if !exists {
+		if r.logger != nil {
+			r.logger.Warn(context.Background(), "Cannot update topics: subscriber not found",
+				map[string]interface{}{"subscriber_id": id})
+		}
 		return ErrSubscriberNotFound
 	}
+
+	oldTopics := subscriber.Topics
 
 	// Remove from old topic maps
 	r.removeFromTopicMaps(subscriber)
@@ -297,6 +356,15 @@ func (r *Registry) UpdateTopics(id string, newTopics []string) error {
 	// Update LastActivityAt timestamp
 	subscriber.LastActivityAt = time.Now()
 
+	if r.logger != nil {
+		r.logger.Info(context.Background(), "Subscriber topics updated",
+			map[string]interface{}{
+				"subscriber_id": id,
+				"old_topics":    oldTopics,
+				"new_topics":    newTopics,
+			})
+	}
+
 	return nil
 }
 
@@ -307,8 +375,16 @@ func (r *Registry) Deregister(id string) error {
 
 	subscriber, exists := r.subscribers[id]
 	if !exists {
+		if r.logger != nil {
+			r.logger.Warn(context.Background(), "Cannot deregister: subscriber not found",
+				map[string]interface{}{"subscriber_id": id})
+		}
 		return ErrSubscriberNotFound
 	}
+
+	// Get stats before removal for logging
+	stats := subscriber.GetStats()
+	duration := time.Since(subscriber.CreatedAt)
 
 	// Remove from topic maps
 	r.removeFromTopicMaps(subscriber)
@@ -319,68 +395,107 @@ func (r *Registry) Deregister(id string) error {
 	// Close the subscriber
 	subscriber.Close()
 
+	if r.logger != nil {
+		r.logger.LogLifecycleEvent(context.Background(), id, "deregistered",
+			map[string]interface{}{
+				"lifetime":         duration.String(),
+				"events_delivered": stats.EventsDelivered,
+				"events_dropped":   stats.EventsDropped,
+				"error_count":      stats.ErrorCount,
+				"timeout_count":    stats.TimeoutCount,
+			})
+	}
+
 	return nil
 }
 
 // BroadcastEvent sends an event to all matching subscribers for the event's topic
 // using the worker pool for concurrent, non-blocking delivery
 func (r *Registry) BroadcastEvent(ctx context.Context, event outbound.Event) int {
+	startTime := time.Now()
+
 	r.mu.RLock()
-	topicSubs, exists := r.topicSubscribers[event.Topic]
-	if !exists {
+	// Find subscribers for this topic
+	topicMap, exists := r.topicSubscribers[event.Topic]
+	if !exists || len(topicMap) == 0 {
 		r.mu.RUnlock()
+		if r.logger != nil {
+			r.logger.Debug(ctx, "No subscribers found for topic",
+				map[string]interface{}{
+					"topic":    event.Topic,
+					"event_id": event.ID,
+				})
+		}
 		return 0
 	}
 
-	// Make a copy of the subscribers to avoid holding the lock during delivery
-	subscribers := make([]*models.Subscriber, 0, len(topicSubs))
-	for _, subscriber := range topicSubs {
-		if subscriber.State == models.SubscriberStateActive {
-			subscribers = append(subscribers, subscriber)
-		}
+	// Create a copy of the subscribers for this topic to avoid holding the lock during delivery
+	subscribers := make([]*models.Subscriber, 0, len(topicMap))
+	for _, sub := range topicMap {
+		subscribers = append(subscribers, sub)
 	}
 	r.mu.RUnlock()
 
-	if len(subscribers) == 0 {
-		return 0
+	if r.logger != nil {
+		r.logger.Info(ctx, "Broadcasting event",
+			map[string]interface{}{
+				"event_id":         event.ID,
+				"topic":            event.Topic,
+				"event_type":       event.Type,
+				"subscriber_count": len(subscribers),
+				"event_timestamp":  time.Unix(0, event.Timestamp),
+				"event_version":    event.Version,
+			})
 	}
 
-	// Use a simple channel to collect results
-	resultChan := make(chan error, len(subscribers))
-	submittedCount := 0
-
-	// Submit delivery tasks to the worker pool
-	for _, subscriber := range subscribers {
-		// Use the new filtering mechanism
-		if ShouldDeliverEvent(subscriber.Filter.ToOutboundFilter(), event) {
-			select {
-			case <-ctx.Done():
-				// Context cancelled
-				goto processResults
-			default:
-				// Submit task to worker pool - fire and forget
-				if r.workerPool.submit(ctx, subscriber, event, resultChan) {
-					submittedCount++
-				}
-			}
-		}
-	}
-
-processResults:
-	// For tests and synchronous behavior, wait for immediate results
-	// This is a compromise - in production we'd let the worker pool handle things asynchronously
-	// but for tests we need deterministic behavior
+	// Count subscribers that should receive the event
 	successCount := 0
-	for i := 0; i < submittedCount; i++ {
-		select {
-		case err := <-resultChan:
-			if err == nil {
-				successCount++
+
+	// Create a channel to receive task results
+	resultChan := make(chan error, len(subscribers))
+	deliveryCount := 0
+
+	// Submit delivery tasks to the worker pool for subscribers that match the filter criteria
+	for _, subscriber := range subscribers {
+		// Apply filtering before submitting to worker pool
+		if subscriber.State == models.SubscriberStateActive {
+			// Check if the event should be delivered based on the subscriber's filter criteria
+			if ShouldDeliverEvent(subscriber.GetFilter(), event) {
+				r.workerPool.submit(ctx, subscriber, event, resultChan)
+				deliveryCount++
+			} else if r.logger != nil {
+				r.logger.Debug(ctx, "Event filtered out for subscriber",
+					map[string]interface{}{
+						"event_id":      event.ID,
+						"subscriber_id": subscriber.ID,
+						"event_type":    event.Type,
+						"filter":        subscriber.Filter,
+					})
 			}
-		case <-ctx.Done():
-			// Context cancelled - don't wait for more results
-			return successCount
 		}
+	}
+
+	// Wait for all tasks to complete
+	for i := 0; i < deliveryCount; i++ {
+		err := <-resultChan
+		if err == nil {
+			successCount++
+		}
+	}
+
+	// Log broadcast results
+	if r.logger != nil {
+		duration := time.Since(startTime)
+		r.logger.Info(ctx, "Event broadcast completed",
+			map[string]interface{}{
+				"event_id":          event.ID,
+				"topic":             event.Topic,
+				"subscriber_count":  len(subscribers),
+				"filtered_count":    deliveryCount,
+				"success_count":     successCount,
+				"duration":          duration.String(),
+				"delivery_rate_pct": float64(successCount) / float64(deliveryCount) * 100,
+			})
 	}
 
 	return successCount
@@ -448,6 +563,14 @@ func (r *Registry) addToTopicMaps(subscriber *models.Subscriber) {
 			r.topicSubscribers[topic] = make(map[string]*models.Subscriber)
 		}
 		r.topicSubscribers[topic][subscriber.ID] = subscriber
+
+		if r.logger != nil {
+			r.logger.Debug(context.Background(), "Added subscriber to topic map",
+				map[string]interface{}{
+					"subscriber_id": subscriber.ID,
+					"topic":         topic,
+				})
+		}
 	}
 }
 
@@ -456,9 +579,18 @@ func (r *Registry) removeFromTopicMaps(subscriber *models.Subscriber) {
 	for _, topic := range subscriber.Topics {
 		if topicMap, exists := r.topicSubscribers[topic]; exists {
 			delete(topicMap, subscriber.ID)
-			// If the topic map is empty, remove it
+
+			// If the topic map is now empty, remove it
 			if len(topicMap) == 0 {
 				delete(r.topicSubscribers, topic)
+			}
+
+			if r.logger != nil {
+				r.logger.Debug(context.Background(), "Removed subscriber from topic map",
+					map[string]interface{}{
+						"subscriber_id": subscriber.ID,
+						"topic":         topic,
+					})
 			}
 		}
 	}
