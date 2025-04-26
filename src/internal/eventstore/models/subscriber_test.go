@@ -2,11 +2,15 @@ package models
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
 
 	"goeventsource/src/internal/port/outbound"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestSubscriberImplementsInterface verifies that the Subscriber struct implements the outbound.Subscriber interface
@@ -717,22 +721,80 @@ func TestGetRetryInfo(t *testing.T) {
 			BackoffMultiplier: 2.0,
 			MaxRetries:        3,
 			CooldownPeriod:    100 * time.Millisecond,
-			CurrentTimeout:    50 * time.Millisecond,
 			CurrentRetryCount: 0,
 		},
+		BufferSize: 1, // Use buffer size 1 to easily block
 	}
 	subscriber := NewSubscriber(config)
 
 	// Initial state
-	current, max, timeout := subscriber.GetRetryInfo()
-	if current != 0 || max != 3 || timeout != 50*time.Millisecond {
-		t.Errorf("Expected (0, 3, 50ms), got (%d, %d, %v)", current, max, timeout)
+	retryCount, lastRetry, nextTimeout := subscriber.GetRetryInfo()
+	if retryCount != 0 || nextTimeout != 50*time.Millisecond {
+		t.Errorf("Expected initial info (0, 50ms), got (%d, %v)", retryCount, nextTimeout)
+	}
+	if !lastRetry.IsZero() {
+		t.Errorf("Expected initial lastRetryTime to be zero, got %v", lastRetry)
 	}
 
-	// After one retry
-	subscriber.handleRetry()
-	current, max, timeout = subscriber.GetRetryInfo()
-	if current != 1 || max != 3 || timeout != 100*time.Millisecond {
-		t.Errorf("Expected (1, 3, 100ms), got (%d, %d, %v)", current, max, timeout)
+	// --- Simulate first failure (timeout) ---
+	// Fill the buffer
+	subscriber.EventChannel <- outbound.Event{ID: "fill-event-1"}
+
+	// Call ReceiveEvent with a context that will time out immediately
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
+	err := subscriber.ReceiveEvent(ctx, outbound.Event{ID: "fail-event-1"})
+	cancel()
+
+	// Assert that an error occurred (specifically context deadline exceeded)
+	require.Error(t, err, "Expected an error due to timeout")
+	assert.True(t, errors.Is(err, context.DeadlineExceeded), "Expected context.DeadlineExceeded error")
+
+	// Check retry info after first failure
+	retryCount, lastRetry, nextTimeout = subscriber.GetRetryInfo()
+	expectedNextTimeout := 100 * time.Millisecond // 50ms * 2.0
+	if retryCount != 1 || nextTimeout != expectedNextTimeout {
+		t.Errorf("Expected info after 1 retry (1, %v), got (%d, %v)", expectedNextTimeout, retryCount, nextTimeout)
+	}
+	if lastRetry.IsZero() {
+		t.Errorf("Expected lastRetryTime to be non-zero after retry")
+	}
+
+	// --- Simulate second failure (timeout) ---
+	// Buffer is already full from previous failed attempt (fail-event-1 could not be sent)
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 1*time.Millisecond)
+	err = subscriber.ReceiveEvent(ctx2, outbound.Event{ID: "fail-event-2"})
+	cancel2()
+	require.Error(t, err, "Expected an error due to timeout on second attempt")
+	assert.True(t, errors.Is(err, context.DeadlineExceeded), "Expected context.DeadlineExceeded error on second attempt")
+
+	// Check retry info after second failure
+	var lastRetry2 time.Time
+	retryCount, lastRetry2, nextTimeout = subscriber.GetRetryInfo()
+	expectedNextTimeout = 200 * time.Millisecond // 100ms * 2.0
+	if retryCount != 2 || nextTimeout != expectedNextTimeout {
+		t.Errorf("Expected info after 2 retries (2, %v), got (%d, %v)", expectedNextTimeout, retryCount, nextTimeout)
+	}
+	if lastRetry2.IsZero() || !lastRetry2.After(lastRetry) {
+		t.Errorf("Expected lastRetryTime to advance after second retry (%v should be after %v)", lastRetry2, lastRetry)
+	}
+
+	// --- Simulate third failure (timeout) ---
+	// Buffer still full
+	ctx3, cancel3 := context.WithTimeout(context.Background(), 1*time.Millisecond)
+	err = subscriber.ReceiveEvent(ctx3, outbound.Event{ID: "fail-event-3"})
+	cancel3()
+	require.Error(t, err, "Expected an error due to timeout on third attempt")
+	assert.True(t, errors.Is(err, context.DeadlineExceeded), "Expected context.DeadlineExceeded error on third attempt")
+
+	// Check retry info after third failure (hitting MaxRetries = 3)
+	var lastRetry3 time.Time
+	retryCount, lastRetry3, nextTimeout = subscriber.GetRetryInfo()
+	// Next timeout should be capped at MaxTimeout (200ms)
+	expectedNextTimeout = 200 * time.Millisecond
+	if retryCount != 3 || nextTimeout != expectedNextTimeout {
+		t.Errorf("Expected info after 3 retries (3, %v), got (%d, %v)", expectedNextTimeout, retryCount, nextTimeout)
+	}
+	if lastRetry3.IsZero() || !lastRetry3.After(lastRetry2) {
+		t.Errorf("Expected lastRetryTime to advance after third retry (%v should be after %v)", lastRetry3, lastRetry2)
 	}
 }

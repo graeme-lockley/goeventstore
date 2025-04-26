@@ -4,6 +4,7 @@ package subscribers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -184,6 +185,29 @@ func (l *SubscriberLogger) LogRetryAttempt(ctx context.Context, subscriberID str
 	logFields["retry_count"] = retryCount
 	logFields["next_timeout"] = nextTimeout.String()
 	l.Info(ctx, "Retrying event delivery", logFields)
+}
+
+// LogErrorDelivery logs a detailed error message for a failed event delivery attempt
+func (l *SubscriberLogger) LogErrorDelivery(ctx context.Context, subscriberID, eventID string, err error, retryCount int, nextTimeout time.Duration, fields map[string]interface{}) {
+	logFields := SubscriberLogFields(subscriberID, fields)
+	logFields["event_id"] = eventID
+	logFields["error"] = err.Error()
+	logFields["retry_count"] = retryCount
+	logFields["next_timeout"] = nextTimeout.String()
+
+	// Add stack trace if available (simple check for unwrapped errors)
+	if unwrappedErr := errors.Unwrap(err); unwrappedErr != nil {
+		logFields["error_cause"] = unwrappedErr.Error()
+	}
+	// Add more sophisticated stack trace extraction here if using libraries like pkg/errors
+
+	// Add subscriber details if provided (e.g., callback URL for network errors)
+	if subDetails, ok := fields["subscriber_details"]; ok {
+		logFields["subscriber_details"] = subDetails
+	}
+
+	// Use WARN level for delivery errors that might be retried
+	l.Warn(ctx, "Event delivery failed", logFields)
 }
 
 // LogRegistration logs a subscriber registration with detailed client information

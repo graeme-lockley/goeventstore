@@ -4,6 +4,7 @@ package models
 import (
 	"context"
 	"log"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -557,11 +558,33 @@ func (s *Subscriber) ShouldRetry() bool {
 	return true
 }
 
-// GetRetryInfo returns current retry count, max retries, and current timeout
-func (s *Subscriber) GetRetryInfo() (current int, max int, timeout time.Duration) {
+// GetRetryInfo returns current retry count, last retry time, and next timeout duration.
+// This implements the outbound.Subscriber interface method.
+func (s *Subscriber) GetRetryInfo() (retryCount int, lastRetryTime time.Time, nextTimeout time.Duration) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.Timeout.CurrentRetryCount, s.Timeout.MaxRetries, s.Timeout.CurrentTimeout
+
+	currentRetryCount := s.Timeout.CurrentRetryCount
+	lastRetryTime = s.Timeout.LastRetryTime
+
+	// Determine the timeout that will be used for the *next* attempt (if one happens)
+	if currentRetryCount >= s.Timeout.MaxRetries {
+		// If max retries reached (or exceeded), the effective timeout is MaxTimeout until cooldown reset
+		nextTimeout = s.Timeout.MaxTimeout
+	} else {
+		// Calculate next timeout based on InitialTimeout, multiplier, and current retry count
+		backoffFactor := math.Pow(s.Timeout.BackoffMultiplier, float64(currentRetryCount))
+		nextTimeoutCalc := time.Duration(float64(s.Timeout.InitialTimeout) * backoffFactor)
+
+		if nextTimeoutCalc > s.Timeout.MaxTimeout {
+			nextTimeout = s.Timeout.MaxTimeout
+		} else {
+			nextTimeout = nextTimeoutCalc
+		}
+	}
+
+	retryCount = currentRetryCount
+	return
 }
 
 // resetAfterCooldown resets retry count and timeout after cooldown period

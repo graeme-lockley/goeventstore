@@ -20,6 +20,10 @@ func (m *mockSubscriber) Resume() error                                       { 
 func (m *mockSubscriber) Close() error                                        { return nil }
 func (m *mockSubscriber) UpdateFilter(filter SubscriberFilter) error          { return nil }
 func (m *mockSubscriber) UpdateTimeout(config TimeoutConfig) error            { return nil }
+func (m *mockSubscriber) GetRetryInfo() (retryCount int, lastRetryTime time.Time, nextTimeout time.Duration) {
+	// Dummy implementation for mock
+	return 0, time.Time{}, 0
+}
 
 // mockRegistry implements the SubscriberRegistry interface for testing
 type mockRegistry struct{}

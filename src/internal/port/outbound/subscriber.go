@@ -134,6 +134,10 @@ type Subscriber interface {
 
 	// UpdateTimeout updates the subscriber's timeout configuration
 	UpdateTimeout(config TimeoutConfig) error
+
+	// GetRetryInfo returns the current retry count, last retry time, and next timeout duration.
+	// This is needed by the delivery mechanism for logging and backoff calculation.
+	GetRetryInfo() (retryCount int, lastRetryTime time.Time, nextTimeout time.Duration)
 }
 
 // SubscriberRegistry defines the interface for managing multiple subscribers
