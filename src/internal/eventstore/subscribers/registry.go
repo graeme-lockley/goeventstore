@@ -229,6 +229,9 @@ type Registry struct {
 	// Logger for registry operations
 	logger *SubscriberLogger
 
+	// Channel to stop the timeout monitor
+	timeoutMonitorStopCh chan struct{}
+
 	// Mutex for thread safety
 	mu sync.RWMutex
 }
@@ -246,6 +249,11 @@ func NewRegistryWithConfig(poolConfig WorkerPoolConfig) *Registry {
 		logger:           NewSubscriberLogger(INFO),
 	}
 	r.workerPool = newWorkerPool(poolConfig, r.logger)
+
+	// Start timeout monitor with default settings
+	// Check every 30 seconds, deregister subscribers with more than 10 errors
+	r.timeoutMonitorStopCh = r.StartTimeoutMonitor(30*time.Second, 10)
+
 	return r
 }
 
@@ -756,6 +764,13 @@ func (r *Registry) CountByTopic(topic string) int {
 
 // Shutdown gracefully shuts down the worker pool and closes subscribers
 func (r *Registry) Shutdown(timeout time.Duration) {
+	// Stop timeout monitor if it's running
+	if r.timeoutMonitorStopCh != nil {
+		close(r.timeoutMonitorStopCh)
+		r.timeoutMonitorStopCh = nil
+		r.logger.Info(context.Background(), "Timeout monitor stopped", nil)
+	}
+
 	// Shutdown the worker pool first
 	if r.workerPool != nil {
 		r.logger.Info(context.Background(), "Shutting down subscriber worker pool...", nil)
@@ -777,6 +792,128 @@ func (r *Registry) Shutdown(timeout time.Duration) {
 	// Clear maps
 	r.subscribers = make(map[string]outbound.Subscriber)
 	r.topicSubscribers = make(map[string]map[string]outbound.Subscriber)
+}
+
+// StartTimeoutMonitor starts a background goroutine that periodically checks for
+// timed-out subscribers and automatically deregisters them
+func (r *Registry) StartTimeoutMonitor(checkInterval time.Duration, maxErrorThreshold int) (stopCh chan struct{}) {
+	stopCh = make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+
+	r.logger.Info(ctx, "Starting timeout monitor for subscriber registry",
+		map[string]interface{}{
+			"check_interval":  checkInterval.String(),
+			"error_threshold": maxErrorThreshold,
+		})
+
+	go func() {
+		ticker := time.NewTicker(checkInterval)
+		defer ticker.Stop()
+		defer cancel()
+
+		for {
+			select {
+			case <-stopCh:
+				r.logger.Info(ctx, "Stopping timeout monitor", nil)
+				return
+			case <-ticker.C:
+				r.checkAndDeregisterTimedOutSubscribers(ctx, maxErrorThreshold)
+			}
+		}
+	}()
+
+	return stopCh
+}
+
+// checkAndDeregisterTimedOutSubscribers checks all subscribers and deregisters those
+// that have exceeded their maximum retries or timeout threshold
+func (r *Registry) checkAndDeregisterTimedOutSubscribers(ctx context.Context, maxErrorThreshold int) {
+	r.mu.RLock()
+	// Create a copy of subscriber IDs to avoid holding lock during potentially lengthy operations
+	var subscribersToCheck []string
+	for id := range r.subscribers {
+		subscribersToCheck = append(subscribersToCheck, id)
+	}
+	r.mu.RUnlock()
+
+	deregisteredCount := 0
+
+	for _, id := range subscribersToCheck {
+		// Get the subscriber with a read lock
+		r.mu.RLock()
+		subscriber, exists := r.subscribers[id]
+		r.mu.RUnlock()
+
+		if !exists {
+			continue
+		}
+
+		// Get retry information from the subscriber
+		retryCount, lastRetryTime, _ := subscriber.GetRetryInfo()
+		stats := subscriber.GetStats()
+
+		shouldDeregister := false
+		deregReason := ""
+		details := map[string]interface{}{}
+
+		// Check if subscriber has exceeded maximum error threshold
+		if stats.ErrorCount >= int64(maxErrorThreshold) {
+			shouldDeregister = true
+			deregReason = "max_errors_exceeded"
+			details["error_count"] = stats.ErrorCount
+			details["max_errors"] = maxErrorThreshold
+		}
+
+		// Check if subscriber has exceeded maximum retries
+		// Only do this check for subscribers that have actually had retry attempts
+		if !shouldDeregister && retryCount > 0 {
+			// Check if the subscriber says it's in a cooldown state
+			if subModel, ok := subscriber.(*models.Subscriber); ok {
+				if !subModel.ShouldRetry() && !lastRetryTime.IsZero() {
+					// Check if it's been too long since the last retry (double the cooldown period)
+					timeout := subModel.Timeout
+					if timeout.MaxRetries > 0 && retryCount >= timeout.MaxRetries {
+						cooldownExpiry := lastRetryTime.Add(timeout.CooldownPeriod * 2)
+						if time.Now().After(cooldownExpiry) {
+							shouldDeregister = true
+							deregReason = "max_retries_exceeded"
+							details["retry_count"] = retryCount
+							details["max_retries"] = timeout.MaxRetries
+							details["cooldown_period"] = timeout.CooldownPeriod.String()
+							details["last_retry_time"] = lastRetryTime.Format(time.RFC3339)
+						}
+					}
+				}
+			}
+		}
+
+		// If any deregistration criteria met, remove the subscriber
+		if shouldDeregister {
+			if err := r.deregisterWithReason(ctx, id, deregReason, details); err != nil {
+				r.logger.Error(ctx, "Failed to automatically deregister timed-out subscriber",
+					map[string]interface{}{
+						"subscriber_id": id,
+						"reason":        deregReason,
+						"error":         err.Error(),
+					})
+			} else {
+				deregisteredCount++
+				r.logger.Info(ctx, "Automatically deregistered subscriber due to timeout",
+					map[string]interface{}{
+						"subscriber_id": id,
+						"reason":        deregReason,
+						"details":       details,
+					})
+			}
+		}
+	}
+
+	if deregisteredCount > 0 {
+		r.logger.Info(ctx, "Timeout monitor completed", map[string]interface{}{
+			"deregistered_count": deregisteredCount,
+			"total_checked":      len(subscribersToCheck),
+		})
+	}
 }
 
 // addToTopicMaps adds a subscriber to the relevant topic maps

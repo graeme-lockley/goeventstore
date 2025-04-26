@@ -98,7 +98,7 @@
     - Log deregistration with reason
     - Clean up any pending events
 
-- [ ] 15. Add event broadcasting to subscribers in AppendEvents method
+- [x] 15. Add event broadcasting to subscribers in AppendEvents method
     - Find subscribers interested in topic
     - Apply filtering based on subscriber preferences
     - Launch goroutine for fan-out delivery
