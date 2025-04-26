@@ -78,7 +78,7 @@
     - Create GetSubscriber method for detailed subscriber info
     - Implement UpdateSubscriber method for configuration changes
 
-- [ ] 12. Modify EventStore implementation to include subscriber registry
+- [x] 12. Modify EventStore implementation to include subscriber registry
     - Add subscriber registry as a field in EventStore
     - Initialize registry in EventStore constructor
     - Include registry in health check reporting

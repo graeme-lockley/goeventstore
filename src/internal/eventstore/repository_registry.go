@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"goeventsource/src/internal/adapters/fs"
 	"goeventsource/src/internal/adapters/memory"
 	"goeventsource/src/internal/eventstore/models"
+	"goeventsource/src/internal/eventstore/subscribers"
 	"goeventsource/src/internal/port/outbound"
 )
 
@@ -27,6 +29,7 @@ var (
 type RepositoryRegistry struct {
 	mu           sync.RWMutex
 	repositories map[string]outbound.EventRepository // map[adapter:connection]repository
+	subscribers  *subscribers.Registry               // Subscriber registry for event delivery
 	isShutdown   bool                                // Flag to track registry shutdown state
 }
 
@@ -34,8 +37,14 @@ type RepositoryRegistry struct {
 func NewRepositoryRegistry() *RepositoryRegistry {
 	return &RepositoryRegistry{
 		repositories: make(map[string]outbound.EventRepository),
+		subscribers:  subscribers.NewRegistry(),
 		isShutdown:   false,
 	}
+}
+
+// GetSubscriberRegistry returns the subscriber registry
+func (r *RepositoryRegistry) GetSubscriberRegistry() *subscribers.Registry {
+	return r.subscribers
 }
 
 // Get retrieves a repository by adapter and connection string
@@ -165,6 +174,11 @@ func (r *RepositoryRegistry) Close() error {
 		}
 	}
 
+	// Shutdown subscriber registry with a 5-second timeout
+	if r.subscribers != nil {
+		r.subscribers.Shutdown(5 * time.Second)
+	}
+
 	// Clear the repositories map
 	r.repositories = make(map[string]outbound.EventRepository)
 
@@ -288,6 +302,38 @@ func (r *RepositoryRegistry) Health(ctx context.Context) (map[string]interface{}
 	}
 
 	result["repositories"] = repoHealth
+
+	// Add subscriber registry health information
+	if r.subscribers != nil {
+		subscriberInfo := map[string]interface{}{
+			"status": "up",
+			"count":  r.subscribers.Count(),
+		}
+
+		// Add topic distribution information
+		topicCounts := make(map[string]int)
+		// Get all subscribers (empty topic filter)
+		allSubscribers := r.subscribers.List("")
+		for _, sub := range allSubscribers {
+			for _, topic := range sub.GetTopics() {
+				topicCounts[topic]++
+			}
+		}
+		subscriberInfo["topicDistribution"] = topicCounts
+
+		// Add subscriber state information
+		activeCount := len(r.subscribers.ListByState(models.SubscriberStateActive))
+		pausedCount := len(r.subscribers.ListByState(models.SubscriberStatePaused))
+		closedCount := len(r.subscribers.ListByState(models.SubscriberStateClosed))
+
+		subscriberInfo["stateDistribution"] = map[string]int{
+			"active": activeCount,
+			"paused": pausedCount,
+			"closed": closedCount,
+		}
+
+		result["subscribers"] = subscriberInfo
+	}
 
 	// Set overall status based on repository health
 	if downCount > 0 {

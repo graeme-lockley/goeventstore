@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"goeventsource/src/internal/eventstore/models"
+	"goeventsource/src/internal/eventstore/subscribers"
 	"goeventsource/src/internal/port/outbound"
 )
 
@@ -774,9 +775,11 @@ func validateTopicConfig(config outbound.TopicConfig) error {
 // AppendEvents appends events to a topic
 func (es *EventStore) AppendEvents(ctx context.Context, topicName string, events []outbound.Event) error {
 	es.mu.RLock()
-	defer es.mu.RUnlock()
+	registry := es.registry // Capture registry reference before releasing lock
+	initialized := es.isInitialized
+	es.mu.RUnlock()
 
-	if !es.isInitialized {
+	if !initialized {
 		return ErrNotInitialized
 	}
 
@@ -802,6 +805,31 @@ func (es *EventStore) AppendEvents(ctx context.Context, topicName string, events
 		es.logger.Printf("Failed to append events to topic %s: %v", topicName, err)
 		return fmt.Errorf("failed to append events to topic %s: %w", topicName, err)
 	}
+
+	// Broadcast events to subscribers asynchronously
+	go func() {
+		// Create a new context for event broadcasting
+		broadcastCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		subscriberRegistry := registry.GetSubscriberRegistry()
+		totalDelivered := 0
+
+		// Broadcast each event to subscribers
+		for _, event := range events {
+			// Broadcast event to subscribers
+			delivered := subscriberRegistry.BroadcastEvent(broadcastCtx, event)
+			totalDelivered += delivered
+
+			// Log broadcast results
+			es.logger.Printf("Event %s of type %s on topic %s delivered to %d subscribers",
+				event.ID, event.Type, event.Topic, delivered)
+		}
+
+		// Log overall delivery statistics
+		es.logger.Printf("Broadcast completed for %d events on topic %s, total deliveries: %d",
+			len(events), topicName, totalDelivered)
+	}()
 
 	return nil
 }
@@ -889,76 +917,149 @@ func (es *EventStore) GetLatestVersion(ctx context.Context, topicName string) (i
 	return version, nil
 }
 
-// --- Subscriber Management Methods (Stubs for Task 11) ---
+// --- Subscriber Management Methods ---
 
-// RegisterSubscriber adds a new subscriber to the registry (STUB)
+// RegisterSubscriber adds a new subscriber to the registry
 func (es *EventStore) RegisterSubscriber(ctx context.Context, config outbound.SubscriberConfig) (outbound.Subscriber, error) {
 	es.mu.RLock() // Use RLock for read-only checks
 	initialized := es.isInitialized
+	registry := es.registry
 	es.mu.RUnlock()
 
 	if !initialized {
 		return nil, ErrNotInitialized
 	}
-	es.logger.Printf("WARN: RegisterSubscriber not fully implemented yet.")
-	// TODO: Implement actual registration logic (Task 13)
-	return nil, errors.New("RegisterSubscriber not implemented")
+
+	// Convert from outbound.SubscriberConfig to models.SubscriberConfig
+	internalConfig := models.SubscriberConfigFromOutbound(config)
+
+	// Get the subscriber registry
+	subscriberRegistry := registry.GetSubscriberRegistry()
+
+	// Use RegisterWithClientInfo to provide request context
+	options := subscribers.RegisterOptions{
+		RequestID: fmt.Sprintf("es-%d", time.Now().UnixNano()),
+	}
+
+	// Extract client info from context if available
+	if ctxClientIP, ok := ctx.Value("client_ip").(string); ok {
+		options.ClientIP = ctxClientIP
+	}
+	if ctxUserAgent, ok := ctx.Value("user_agent").(string); ok {
+		options.UserAgent = ctxUserAgent
+	}
+	if ctxClientID, ok := ctx.Value("client_id").(string); ok {
+		options.ClientID = ctxClientID
+	}
+
+	subscriber, err := subscriberRegistry.RegisterWithClientInfo(ctx, internalConfig, options)
+	if err != nil {
+		es.logger.Printf("Failed to register subscriber: %v", err)
+		return nil, fmt.Errorf("failed to register subscriber: %w", err)
+	}
+
+	es.logger.Printf("Subscriber registered successfully: %s", subscriber.GetID())
+	return subscriber, nil
 }
 
-// DeregisterSubscriber removes a subscriber (STUB)
+// DeregisterSubscriber removes a subscriber
 func (es *EventStore) DeregisterSubscriber(ctx context.Context, subscriberID string, reason string) error {
 	es.mu.RLock()
 	initialized := es.isInitialized
+	registry := es.registry
 	es.mu.RUnlock()
 
 	if !initialized {
 		return ErrNotInitialized
 	}
-	es.logger.Printf("WARN: DeregisterSubscriber not fully implemented yet.")
-	// TODO: Implement actual deregistration logic (Task 14)
-	return errors.New("DeregisterSubscriber not implemented")
+
+	// Get the subscriber registry
+	subscriberRegistry := registry.GetSubscriberRegistry()
+
+	// Log the deregistration reason and details, since we can't pass them directly
+	if reason != "" {
+		es.logger.Printf("Deregistering subscriber %s, reason: %s", subscriberID, reason)
+	}
+
+	// Use standard Deregister method
+	err := subscriberRegistry.Deregister(subscriberID)
+	if err != nil {
+		es.logger.Printf("Failed to deregister subscriber %s: %v", subscriberID, err)
+		return fmt.Errorf("failed to deregister subscriber: %w", err)
+	}
+
+	es.logger.Printf("Subscriber deregistered successfully: %s", subscriberID)
+	return nil
 }
 
-// UpdateSubscriber allows modifying a subscriber (STUB)
+// UpdateSubscriber allows modifying a subscriber
 func (es *EventStore) UpdateSubscriber(ctx context.Context, subscriberID string, updateFn func(outbound.Subscriber) error) error {
 	es.mu.RLock()
 	initialized := es.isInitialized
+	registry := es.registry
 	es.mu.RUnlock()
 
 	if !initialized {
 		return ErrNotInitialized
 	}
-	es.logger.Printf("WARN: UpdateSubscriber not fully implemented yet.")
-	// TODO: Implement actual update logic
-	return errors.New("UpdateSubscriber not implemented")
+
+	// Get the subscriber registry
+	subscriberRegistry := registry.GetSubscriberRegistry()
+
+	// Update the subscriber using the provided function
+	err := subscriberRegistry.Update(subscriberID, updateFn)
+	if err != nil {
+		es.logger.Printf("Failed to update subscriber %s: %v", subscriberID, err)
+		return fmt.Errorf("failed to update subscriber: %w", err)
+	}
+
+	es.logger.Printf("Subscriber updated successfully: %s", subscriberID)
+	return nil
 }
 
-// GetSubscriber retrieves a subscriber by ID (STUB)
+// GetSubscriber retrieves a subscriber by ID
 func (es *EventStore) GetSubscriber(ctx context.Context, subscriberID string) (outbound.Subscriber, error) {
 	es.mu.RLock()
 	initialized := es.isInitialized
+	registry := es.registry
 	es.mu.RUnlock()
 
 	if !initialized {
 		return nil, ErrNotInitialized
 	}
-	es.logger.Printf("WARN: GetSubscriber not fully implemented yet.")
-	// TODO: Implement actual retrieval logic
-	return nil, errors.New("GetSubscriber not implemented")
+
+	// Get the subscriber registry
+	subscriberRegistry := registry.GetSubscriberRegistry()
+
+	// Get the subscriber
+	subscriber, err := subscriberRegistry.Get(subscriberID)
+	if err != nil {
+		es.logger.Printf("Failed to get subscriber %s: %v", subscriberID, err)
+		return nil, fmt.Errorf("failed to get subscriber: %w", err)
+	}
+
+	return subscriber, nil
 }
 
-// ListSubscribers returns subscribers matching the filter (STUB)
+// ListSubscribers returns subscribers matching the filter
 func (es *EventStore) ListSubscribers(ctx context.Context, topicFilter string) ([]outbound.Subscriber, error) {
 	es.mu.RLock()
 	initialized := es.isInitialized
+	registry := es.registry
 	es.mu.RUnlock()
 
 	if !initialized {
 		return nil, ErrNotInitialized
 	}
-	es.logger.Printf("WARN: ListSubscribers not fully implemented yet.")
-	// TODO: Implement actual listing logic
-	return nil, errors.New("ListSubscribers not implemented")
+
+	// Get the subscriber registry
+	subscriberRegistry := registry.GetSubscriberRegistry()
+
+	// Get subscribers matching the topic filter
+	subscribers := subscriberRegistry.List(topicFilter)
+
+	es.logger.Printf("Found %d subscribers for topic filter: %s", len(subscribers), topicFilter)
+	return subscribers, nil
 }
 
-// --- End Subscriber Management Stubs ---
+// --- End Subscriber Management Methods ---
