@@ -91,7 +91,7 @@
     - Log successful registration with details
     - Return subscription details including ID
 
-- [ ] 14. Implement subscriber deregistration method with logging
+- [x] 14. Implement subscriber deregistration method with logging
     - Find subscriber in registry
     - Close subscriber channels
     - Remove from registry

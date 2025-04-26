@@ -1034,19 +1034,50 @@ func (es *EventStore) DeregisterSubscriber(ctx context.Context, subscriberID str
 	// Get the subscriber registry
 	subscriberRegistry := registry.GetSubscriberRegistry()
 
-	// Log the deregistration reason and details, since we can't pass them directly
-	if reason != "" {
-		es.logger.Printf("Deregistering subscriber %s, reason: %s", subscriberID, reason)
+	// First get the subscriber to access its information for logging
+	subscriber, err := subscriberRegistry.Get(subscriberID)
+	if err != nil {
+		es.logger.Printf("Failed to find subscriber %s for deregistration: %v", subscriberID, err)
+		return fmt.Errorf("failed to find subscriber for deregistration: %w", err)
 	}
 
-	// Use standard Deregister method
-	err := subscriberRegistry.Deregister(subscriberID)
+	// Gather subscriber information for logging before deregistration
+	subscriberTopics := subscriber.GetTopics()
+	subscriberStats := subscriber.GetStats()
+	state := subscriber.GetState()
+
+	// Log the deregistration intent with comprehensive details
+	if reason == "" {
+		reason = "manual" // Default reason if none provided
+	}
+
+	es.logger.Printf("Deregistering subscriber %s, reason: %s, topics: %v, state: %s, events_delivered: %d, events_dropped: %d, errors: %d",
+		subscriberID, reason, subscriberTopics, state, subscriberStats.EventsDelivered,
+		subscriberStats.EventsDropped, subscriberStats.ErrorCount)
+
+	// Add extra diagnostic information to the log if available
+	if requestID, ok := ctx.Value("request_id").(string); ok && requestID != "" {
+		es.logger.Printf("Deregistration request ID: %s for subscriber: %s", requestID, subscriberID)
+	}
+
+	// First pause subscriber to prevent receiving new events during deregistration
+	if state == outbound.SubscriberStateActive {
+		if pauseErr := subscriber.Pause(); pauseErr != nil {
+			es.logger.Printf("Warning: Could not pause subscriber %s before deregistration: %v", subscriberID, pauseErr)
+		} else {
+			es.logger.Printf("Subscriber %s paused before deregistration", subscriberID)
+		}
+	}
+
+	// Use standard Deregister method which internally uses "manual" as the reason
+	err = subscriberRegistry.Deregister(subscriberID)
 	if err != nil {
 		es.logger.Printf("Failed to deregister subscriber %s: %v", subscriberID, err)
 		return fmt.Errorf("failed to deregister subscriber: %w", err)
 	}
 
-	es.logger.Printf("Subscriber deregistered successfully: %s", subscriberID)
+	es.logger.Printf("Subscriber deregistered successfully: %s, had %d events delivered, %d dropped, %d errors",
+		subscriberID, subscriberStats.EventsDelivered, subscriberStats.EventsDropped, subscriberStats.ErrorCount)
 	return nil
 }
 
