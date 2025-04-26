@@ -95,6 +95,68 @@ func (ec *EventChannel) Close() {
 	}
 }
 
+// Resize changes the buffer size of the channel
+// This creates a new channel with the new buffer size and transfers all existing events
+// Returns the number of events transferred, or an error if the resize failed
+func (ec *EventChannel) Resize(newBufferSize int) (int, error) {
+	if newBufferSize <= 0 {
+		return 0, fmt.Errorf("invalid buffer size: %d", newBufferSize)
+	}
+
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+
+	// Check if the channel is already closed
+	if ec.Channel == nil {
+		return 0, fmt.Errorf("cannot resize closed channel")
+	}
+
+	// Create a new channel with the new buffer size
+	newChannel := make(chan outbound.Event, newBufferSize)
+
+	// Save the old channel
+	oldChannel := ec.Channel
+
+	// Get the current length of the channel
+	currentSize := len(oldChannel)
+
+	// Transfer events from the old channel to the new one
+	// Only transfer what we can without blocking
+	transferCount := 0
+	for i := 0; i < currentSize; i++ {
+		select {
+		case event, ok := <-oldChannel:
+			if !ok {
+				// Channel was closed during transfer
+				break
+			}
+			select {
+			case newChannel <- event:
+				transferCount++
+			default:
+				// New channel is full, log and stop transferring
+				// This shouldn't happen if newBufferSize >= len(oldChannel)
+				ec.Metadata.DroppedEvents++
+			}
+		default:
+			// No more events to read
+			break
+		}
+	}
+
+	// Update the channel and metadata
+	ec.Channel = newChannel
+	ec.Metadata.BufferSize = newBufferSize
+	ec.Metadata.Capacity = newBufferSize
+	ec.Metadata.LastActivity = time.Now()
+
+	// Don't close the old channel here to avoid losing events
+	// that might be added concurrently. The garbage collector will
+	// take care of it once all references are gone.
+
+	return transferCount, nil
+}
+
 // TrySend attempts to send an event to the channel without blocking
 // Returns true if successful, false if the channel is full or closed
 func (ec *EventChannel) TrySend(event outbound.Event) bool {
@@ -191,6 +253,34 @@ func (cf *ChannelFactory) GetChannel(subscriberID string, bufferSize int) models
 
 	// Channel doesn't exist, create a new one
 	return cf.CreateChannel(subscriberID, bufferSize)
+}
+
+// ResizeChannel changes the buffer size of a channel for a subscriber
+// Returns the new buffer size and number of events transferred, or an error if the resize failed
+func (cf *ChannelFactory) ResizeChannel(subscriberID string, newBufferSize int) (int, int, error) {
+	cf.mu.RLock()
+	ec, exists := cf.channels[subscriberID]
+	cf.mu.RUnlock()
+
+	if !exists {
+		return 0, 0, fmt.Errorf("subscriber channel not found: %s", subscriberID)
+	}
+
+	// Perform the resize
+	transferCount, err := ec.Resize(newBufferSize)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	if cf.logger != nil {
+		cf.logger.Debug(context.Background(), "Resized channel for subscriber", map[string]interface{}{
+			"subscriber_id":      subscriberID,
+			"new_buffer_size":    newBufferSize,
+			"events_transferred": transferCount,
+		})
+	}
+
+	return newBufferSize, transferCount, nil
 }
 
 // RemoveChannel removes a channel from the registry and closes it

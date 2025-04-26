@@ -57,6 +57,75 @@ func TestChannelCreation(t *testing.T) {
 	assert.Equal(t, 2, factory.GetChannelCount())
 }
 
+func TestChannelResize(t *testing.T) {
+	factory := NewChannelFactory(100, nil)
+
+	// Create a channel with small buffer size
+	channel := getEventChannel(factory.CreateChannel("test-subscriber", 5))
+	assert.Equal(t, 5, channel.Metadata.BufferSize)
+
+	// Create test event
+	event := outbound.Event{
+		ID:   "test-event",
+		Type: "test",
+	}
+
+	// Fill the channel with events
+	for i := 0; i < 3; i++ {
+		success := channel.TrySend(event)
+		assert.True(t, success)
+	}
+
+	// Test direct resize on EventChannel
+	transferred, err := channel.Resize(10)
+	assert.NoError(t, err)
+	assert.Equal(t, 3, transferred) // 3 events should be transferred
+	assert.Equal(t, 10, channel.Metadata.BufferSize)
+	assert.Equal(t, 10, channel.Metadata.Capacity)
+
+	// Verify the events are still in the channel
+	assert.Equal(t, 3, len(channel.Channel))
+
+	// Test resize via factory
+	newSize, transferred, err := factory.ResizeChannel("test-subscriber", 15)
+	assert.NoError(t, err)
+	assert.Equal(t, 15, newSize)
+	assert.Equal(t, 3, transferred) // 3 events should be transferred
+
+	// Verify the channel metadata is updated
+	metadata := channel.GetMetadata()
+	assert.Equal(t, 15, metadata.BufferSize)
+	assert.Equal(t, 15, metadata.Capacity)
+	assert.Equal(t, 3, metadata.Usage)
+
+	// Add more events - should now fit in the larger buffer
+	for i := 0; i < 10; i++ {
+		success := channel.TrySend(event)
+		assert.True(t, success)
+	}
+
+	// Try to resize with invalid size
+	_, err = channel.Resize(0)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid buffer size")
+
+	// Try to resize through factory with invalid size
+	_, _, err = factory.ResizeChannel("test-subscriber", -5)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid buffer size")
+
+	// Try to resize a non-existent channel
+	_, _, err = factory.ResizeChannel("non-existent", 10)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "subscriber channel not found")
+
+	// Close the channel and try to resize it
+	channel.Close()
+	_, err = channel.Resize(20)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot resize closed channel")
+}
+
 func TestChannelSendAndMetadata(t *testing.T) {
 	factory := NewChannelFactory(100, nil)
 	channel := getEventChannel(factory.CreateChannel("test-subscriber", 5))

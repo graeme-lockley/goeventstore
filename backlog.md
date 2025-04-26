@@ -114,13 +114,13 @@
 
 ### Channel Management
 
-- [ ] 17. Create a channel factory for subscriber communication
+- [x] 17. Create a channel factory for subscriber communication
     - Implement channel creation with configurable buffer size
     - Add channel metadata (creation time, subscriber ID)
     - Create channel registry for tracking active channels
     - Implement channel health check functionality
 
-- [ ] 18. Implement buffered channel creation with configurable buffer size
+- [x] 18. Implement buffered channel creation with configurable buffer size
     - Allow buffer size configuration per subscriber
     - Set reasonable defaults based on expected event volume
     - Add overflow handling for full channels
