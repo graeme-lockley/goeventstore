@@ -226,6 +226,9 @@ type Registry struct {
 	// Worker pool for event delivery
 	workerPool *workerPool
 
+	// Channel factory for managing subscriber channels
+	channelFactory *ChannelFactory
+
 	// Logger for registry operations
 	logger *SubscriberLogger
 
@@ -243,12 +246,19 @@ func NewRegistry() *Registry {
 
 // NewRegistryWithConfig creates a new registry with custom worker pool configuration
 func NewRegistryWithConfig(poolConfig WorkerPoolConfig) *Registry {
+	logger := NewSubscriberLogger(INFO)
+
 	r := &Registry{
 		subscribers:      make(map[string]outbound.Subscriber),
 		topicSubscribers: make(map[string]map[string]outbound.Subscriber),
-		logger:           NewSubscriberLogger(INFO),
+		logger:           logger,
 	}
-	r.workerPool = newWorkerPool(poolConfig, r.logger)
+
+	// Initialize worker pool
+	r.workerPool = newWorkerPool(poolConfig, logger)
+
+	// Initialize channel factory with default buffer size
+	r.channelFactory = NewChannelFactory(100, logger)
 
 	// Start timeout monitor with default settings
 	// Check every 30 seconds, deregister subscribers with more than 10 errors
@@ -326,7 +336,7 @@ func (r *Registry) RegisterWithClientInfo(ctx context.Context, config models.Sub
 	}
 
 	// Create the concrete subscriber model
-	subscriber := models.NewSubscriber(config)
+	subscriber := models.NewSubscriberWithChannelFactory(config, r.channelFactory)
 	if r.logger != nil {
 		// Use a logger with the subscriber prefix if possible
 		// No type assertion needed here, 'subscriber' is *models.Subscriber
@@ -786,6 +796,11 @@ func (r *Registry) Shutdown(timeout time.Duration) {
 	for id, sub := range r.subscribers {
 		r.logger.Debug(context.Background(), "Closing subscriber during shutdown", map[string]interface{}{"subscriber_id": id})
 		sub.Close() // Use interface method
+
+		// Remove channel from factory if it exists
+		if r.channelFactory != nil {
+			r.channelFactory.RemoveChannel(id)
+		}
 	}
 	r.logger.Info(context.Background(), "All subscribers closed.", nil)
 

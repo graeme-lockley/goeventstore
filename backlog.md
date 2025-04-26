@@ -105,7 +105,7 @@
     - Track successful delivery count
     - Log broadcast statistics
 
-- [ ] 16. Implement automatic deregistration for timed-out callbacks
+- [x] 16. Implement automatic deregistration for timed-out callbacks
     - Create monitor goroutine that checks for timed-out subscribers
     - Apply configured timeout policy
     - Execute deregistration for expired subscribers

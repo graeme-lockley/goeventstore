@@ -232,6 +232,17 @@ func SubscriberConfigFromOutbound(config outbound.SubscriberConfig) SubscriberCo
 // DefaultBufferSize is the default size for event channels
 const DefaultBufferSize = 100
 
+// ChannelProvider represents the minimal interface needed for a channel factory
+type ChannelProvider interface {
+	GetChannel(subscriberID string, bufferSize int) ChannelWrapper
+}
+
+// ChannelWrapper represents a wrapper around a channel
+type ChannelWrapper interface {
+	// Channel returns the underlying event channel
+	GetChannel() chan outbound.Event
+}
+
 // NewSubscriber creates a new subscriber
 func NewSubscriber(config SubscriberConfig) *Subscriber {
 	// Use default buffer size if not specified
@@ -255,6 +266,41 @@ func NewSubscriber(config SubscriberConfig) *Subscriber {
 		logger:         log.New(log.Writer(), "[SUBSCRIBER "+config.ID+"] ", log.LstdFlags),
 		mu:             sync.RWMutex{},
 	}
+}
+
+// NewSubscriberWithChannelFactory creates a new subscriber using the provided channel factory
+func NewSubscriberWithChannelFactory(config SubscriberConfig, channelFactory ChannelProvider) *Subscriber {
+	// Use default buffer size if not specified
+	bufferSize := config.BufferSize
+	if bufferSize <= 0 {
+		bufferSize = DefaultBufferSize
+	}
+
+	now := time.Now()
+	sub := &Subscriber{
+		ID:             config.ID,
+		Topics:         config.Topics,
+		Filter:         config.Filter,
+		Timeout:        config.Timeout,
+		BufferSize:     bufferSize,
+		State:          SubscriberStateActive,
+		CreatedAt:      now,
+		LastActivityAt: now,
+		stats:          subscriberStats{},
+		logger:         log.New(log.Writer(), "[SUBSCRIBER "+config.ID+"] ", log.LstdFlags),
+		mu:             sync.RWMutex{},
+	}
+
+	if channelFactory != nil {
+		// Get channel from factory
+		channelWrapper := channelFactory.GetChannel(config.ID, bufferSize)
+		sub.EventChannel = channelWrapper.GetChannel()
+	} else {
+		// Create channel directly
+		sub.EventChannel = make(chan outbound.Event, bufferSize)
+	}
+
+	return sub
 }
 
 // SetLogger sets the logger for the subscriber
