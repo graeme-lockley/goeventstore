@@ -51,7 +51,7 @@
    - Include client information (IP, user agent if available)
    - Log registration timestamp and expiration if applicable
 
-- [ ] 8. Implement deregistration logging with reason
+- [x] 8. Implement deregistration logging with reason
    - Create log entries for manual deregistration with operator info
    - Add timeout-triggered deregistration logging with timeout details
    - Include error-triggered deregistration with error context

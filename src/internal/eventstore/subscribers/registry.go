@@ -279,9 +279,6 @@ func (r *Registry) RegisterWithClientInfo(ctx context.Context, config models.Sub
 		// Use the specialized registration logger
 		r.logger.LogRegistration(ctx, subscriber.ID, clientInfo, logFields)
 
-		// Log standard lifecycle event
-		r.logger.LogLifecycleEvent(ctx, subscriber.ID, "registered", logFields)
-
 		// Log detailed information at DEBUG level
 		if len(subscriber.Topics) > 0 {
 			r.logger.Debug(ctx, fmt.Sprintf("Subscriber registered for %d topics", len(subscriber.Topics)),
@@ -452,18 +449,11 @@ func (r *Registry) UpdateTopics(id string, newTopics []string) error {
 
 // Deregister removes a subscriber from the registry
 func (r *Registry) Deregister(id string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	return r.deregisterWithReason(context.Background(), id, "manual", nil)
+}
 
-	subscriber, exists := r.subscribers[id]
-	if !exists {
-		if r.logger != nil {
-			r.logger.Warn(context.Background(), "Cannot deregister: subscriber not found",
-				map[string]interface{}{"subscriber_id": id})
-		}
-		return ErrSubscriberNotFound
-	}
-
+// _deregisterLocked performs the core deregistration logic assuming the write lock is already held.
+func (r *Registry) _deregisterLocked(ctx context.Context, subscriber *models.Subscriber, reason string, details map[string]interface{}) {
 	// Get stats before removal for logging
 	stats := subscriber.GetStats()
 	duration := time.Since(subscriber.CreatedAt)
@@ -472,21 +462,46 @@ func (r *Registry) Deregister(id string) error {
 	r.removeFromTopicMaps(subscriber)
 
 	// Remove from subscribers map
-	delete(r.subscribers, id)
+	delete(r.subscribers, subscriber.ID)
 
 	// Close the subscriber
 	subscriber.Close()
 
 	if r.logger != nil {
-		r.logger.LogLifecycleEvent(context.Background(), id, "deregistered",
-			map[string]interface{}{
-				"lifetime":         duration.String(),
-				"events_delivered": stats.EventsDelivered,
-				"events_dropped":   stats.EventsDropped,
-				"error_count":      stats.ErrorCount,
-				"timeout_count":    stats.TimeoutCount,
-			})
+		logFields := map[string]interface{}{
+			"reason":           reason,
+			"lifetime":         duration.String(),
+			"events_delivered": stats.EventsDelivered,
+			"events_dropped":   stats.EventsDropped,
+			"error_count":      stats.ErrorCount,
+			"timeout_count":    stats.TimeoutCount,
+		}
+		// Merge details if provided
+		if details != nil {
+			for k, v := range details {
+				logFields[k] = v
+			}
+		}
+		r.logger.LogLifecycleEvent(ctx, subscriber.ID, "deregistered", logFields)
 	}
+}
+
+// deregisterWithReason removes a subscriber, logging the reason and details
+func (r *Registry) deregisterWithReason(ctx context.Context, id string, reason string, details map[string]interface{}) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	subscriber, exists := r.subscribers[id]
+	if !exists {
+		if r.logger != nil {
+			r.logger.Warn(ctx, "Cannot deregister: subscriber not found",
+				map[string]interface{}{"subscriber_id": id})
+		}
+		return ErrSubscriberNotFound
+	}
+
+	// Call the internal helper that assumes lock is held
+	r._deregisterLocked(ctx, subscriber, reason, details)
 
 	return nil
 }
@@ -585,6 +600,7 @@ func (r *Registry) BroadcastEvent(ctx context.Context, event outbound.Event) int
 
 // CleanupInactive removes subscribers that have been inactive longer than the provided duration
 func (r *Registry) CleanupInactive(inactiveDuration time.Duration) int {
+	ctx := context.Background() // Use a background context for cleanup operations
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -599,12 +615,22 @@ func (r *Registry) CleanupInactive(inactiveDuration time.Duration) int {
 		}
 	}
 
-	// Remove them
+	// Hold the lock while removing to prevent concurrent modifications
 	for _, id := range toRemove {
-		subscriber := r.subscribers[id]
-		r.removeFromTopicMaps(subscriber)
-		delete(r.subscribers, id)
-		subscriber.Close()
+		subscriber, exists := r.subscribers[id]
+		if !exists {
+			// Should not happen if lock is held correctly, but safety first
+			continue
+		}
+
+		// Prepare details for logging
+		details := map[string]interface{}{
+			"inactive_duration": inactiveDuration.String(),
+			"last_activity_at":  subscriber.LastActivityAt.Format(time.RFC3339),
+		}
+
+		// Call the internal helper which assumes the lock is held
+		r._deregisterLocked(ctx, subscriber, "inactive_timeout", details)
 		removedCount++
 	}
 

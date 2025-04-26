@@ -3,6 +3,7 @@ package subscribers
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log"
 	"strings"
@@ -123,7 +124,14 @@ func TestGet(t *testing.T) {
 }
 
 func TestDeregister(t *testing.T) {
+	// Create a buffer to capture log output
+	var buf bytes.Buffer
+	customLogger := log.New(&buf, "", 0)
+	logger := NewSubscriberLogger(INFO)
+	logger.logger = customLogger
+
 	registry := NewRegistry()
+	registry.SetLogger(logger)
 
 	// Register a subscriber
 	config := models.SubscriberConfig{
@@ -156,11 +164,37 @@ func TestDeregister(t *testing.T) {
 		t.Errorf("Expected 0 subscribers for topic2 after deregistration, got %d", registry.CountByTopic("topic2"))
 	}
 
+	// Verify log output contains the reason
+	output := buf.String()
+	logLines := strings.Split(strings.TrimSpace(output), "\n")
+	foundLog := false
+	for _, line := range logLines {
+		var logEntry map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &logEntry); err == nil {
+			// Check if it's the deregistered event for the correct subscriber
+			if lifecycleEvent, ok := logEntry["lifecycle_event"].(string); ok && lifecycleEvent == "deregistered" {
+				if sid, ok := logEntry["subscriber_id"].(string); ok && sid == "test-subscriber-deregister" {
+					if logEntry["reason"] != "manual" {
+						t.Errorf("Expected log reason to be 'manual', got: %v", logEntry["reason"])
+					}
+					foundLog = true
+					break // Found the log we care about
+				}
+			}
+		}
+	}
+
+	if !foundLog {
+		t.Errorf("Could not find deregistration log entry for test-subscriber-deregister in output: %s", output)
+	}
+
 	// Test deregistering non-existent subscriber
+	buf.Reset() // Clear buffer before testing non-existent case
 	err = registry.Deregister("non-existent-subscriber")
 	if err != ErrSubscriberNotFound {
 		t.Errorf("Expected ErrSubscriberNotFound, got %v", err)
 	}
+	// Optionally, verify the warning log for non-existent subscriber was generated
 }
 
 func TestList(t *testing.T) {
@@ -378,7 +412,14 @@ func TestUpdateTopics(t *testing.T) {
 }
 
 func TestCleanupInactive(t *testing.T) {
+	// Create a buffer to capture log output
+	var buf bytes.Buffer
+	customLogger := log.New(&buf, "", 0)
+	logger := NewSubscriberLogger(INFO)
+	logger.logger = customLogger
+
 	registry := NewRegistry()
+	registry.SetLogger(logger)
 
 	// Register subscribers
 	configs := []models.SubscriberConfig{
@@ -405,7 +446,8 @@ func TestCleanupInactive(t *testing.T) {
 	subscriber.LastActivityAt = time.Now().Add(-10 * time.Minute)
 
 	// Cleanup inactive subscribers (inactive for > 5 minutes)
-	removed := registry.CleanupInactive(5 * time.Minute)
+	inactiveDuration := 5 * time.Minute
+	removed := registry.CleanupInactive(inactiveDuration)
 
 	if removed != 1 {
 		t.Errorf("Expected 1 subscriber to be removed, got %d", removed)
@@ -425,6 +467,45 @@ func TestCleanupInactive(t *testing.T) {
 	_, err = registry.Get("active-subscriber")
 	if err != nil {
 		t.Errorf("Expected active subscriber to remain, got error: %v", err)
+	}
+
+	// Verify log output contains the reason
+	output := buf.String()
+
+	// We need to find the correct log line for the inactive subscriber
+	logLines := strings.Split(strings.TrimSpace(output), "\n")
+	foundLog := false
+	for _, line := range logLines {
+		var logEntry map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &logEntry); err == nil {
+			// Check if it's the deregistered event for the correct subscriber
+			if lifecycleEvent, ok := logEntry["lifecycle_event"].(string); ok && lifecycleEvent == "deregistered" {
+				if sid, ok := logEntry["subscriber_id"].(string); ok && sid == "inactive-subscriber" {
+					if logEntry["reason"] != "inactive_timeout" {
+						t.Errorf("Expected log reason to be 'inactive_timeout', got: %v", logEntry["reason"])
+					}
+					// Check details embedded within the main log entry
+					if detailsDuration, ok := logEntry["inactive_duration"].(string); !ok || detailsDuration != inactiveDuration.String() {
+						t.Errorf("Expected inactive_duration '%s', got '%v'", inactiveDuration.String(), logEntry["inactive_duration"])
+					}
+					if _, ok := logEntry["last_activity_at"].(string); !ok {
+						t.Errorf("Expected last_activity_at string in log entry")
+					}
+
+					// Check standard deregistration fields are also present
+					if _, ok := logEntry["lifetime"].(string); !ok {
+						t.Errorf("Expected lifetime string in log entry")
+					}
+
+					foundLog = true
+					break
+				}
+			}
+		}
+	}
+
+	if !foundLog {
+		t.Errorf("Could not find deregistration log entry for inactive-subscriber in output: %s", output)
 	}
 }
 
