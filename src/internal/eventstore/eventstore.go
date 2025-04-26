@@ -13,6 +13,8 @@ import (
 	"goeventsource/src/internal/eventstore/models"
 	"goeventsource/src/internal/eventstore/subscribers"
 	"goeventsource/src/internal/port/outbound"
+
+	"github.com/google/uuid"
 )
 
 // Common errors for EventStore operations
@@ -930,6 +932,12 @@ func (es *EventStore) RegisterSubscriber(ctx context.Context, config outbound.Su
 		return nil, ErrNotInitialized
 	}
 
+	// Validate subscriber configuration
+	if err := validateSubscriberConfig(config); err != nil {
+		es.logger.Printf("Invalid subscriber configuration: %v", err)
+		return nil, fmt.Errorf("invalid subscriber configuration: %w", err)
+	}
+
 	// Convert from outbound.SubscriberConfig to models.SubscriberConfig
 	internalConfig := models.SubscriberConfigFromOutbound(config)
 
@@ -952,14 +960,64 @@ func (es *EventStore) RegisterSubscriber(ctx context.Context, config outbound.Su
 		options.ClientID = ctxClientID
 	}
 
+	// Log registration attempt with details
+	es.logger.Printf("Attempting to register subscriber with config: topics=%v, filter_types=%v, buffer_size=%d",
+		config.Topics, config.Filter.EventTypes, config.BufferSize)
+
+	// Check for expiration in context
+	if expiration, ok := ctx.Value("expiration").(time.Time); ok && !expiration.IsZero() {
+		options.Expiration = expiration
+		es.logger.Printf("Subscriber registration with expiration: %s", expiration.Format(time.RFC3339))
+	}
+
 	subscriber, err := subscriberRegistry.RegisterWithClientInfo(ctx, internalConfig, options)
 	if err != nil {
 		es.logger.Printf("Failed to register subscriber: %v", err)
 		return nil, fmt.Errorf("failed to register subscriber: %w", err)
 	}
 
-	es.logger.Printf("Subscriber registered successfully: %s", subscriber.GetID())
+	// Log successful registration with complete details
+	es.logger.Printf("Subscriber registered successfully: ID=%s, topics=%v, filter_types=%v, from_version=%d, buffer_size=%d",
+		subscriber.GetID(), subscriber.GetTopics(), subscriber.GetFilter().EventTypes,
+		subscriber.GetFilter().FromVersion, config.BufferSize)
+
 	return subscriber, nil
+}
+
+// validateSubscriberConfig performs comprehensive validation on subscriber configuration
+func validateSubscriberConfig(config outbound.SubscriberConfig) error {
+	// Check required fields
+	if len(config.Topics) == 0 {
+		return errors.New("at least one topic is required")
+	}
+
+	// Validate ID format if provided
+	if config.ID != "" {
+		if _, err := uuid.Parse(config.ID); err != nil {
+			return fmt.Errorf("invalid subscriber ID format (must be UUID): %w", err)
+		}
+	}
+
+	// Validate buffer size
+	if config.BufferSize < 0 {
+		return errors.New("buffer size cannot be negative")
+	}
+
+	// Validate timeout configuration if specified
+	if config.Timeout.InitialTimeout < 0 {
+		return errors.New("initial timeout cannot be negative")
+	}
+	if config.Timeout.MaxTimeout < 0 {
+		return errors.New("max timeout cannot be negative")
+	}
+	if config.Timeout.BackoffMultiplier <= 0 {
+		return errors.New("backoff multiplier must be positive")
+	}
+	if config.Timeout.MaxRetries < 0 {
+		return errors.New("max retries cannot be negative")
+	}
+
+	return nil
 }
 
 // DeregisterSubscriber removes a subscriber
