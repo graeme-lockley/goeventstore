@@ -271,11 +271,15 @@ func (s *Subscriber) ReceiveEvent(ctx context.Context, event outbound.Event) err
 	case s.EventChannel <- event:
 		// Event sent successfully
 		s.recordEventDelivery()
+		// Reset retry count on successful delivery
+		s.resetRetryCount()
 		return nil
 	case <-ctx.Done():
 		// Context cancelled or timed out
 		atomic.AddInt64(&s.stats.timeoutCount, 1)
 		s.recordDeliveryError()
+		// Increment retry count and update timeout
+		s.handleRetry()
 		return ctx.Err()
 	}
 }
@@ -390,6 +394,9 @@ func (s *Subscriber) UpdateTimeout(config outbound.TimeoutConfig) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Timeout = TimeoutConfigFromOutbound(config)
+	// Reset the current timeout to initial timeout when configuration is updated
+	s.Timeout.CurrentTimeout = s.Timeout.InitialTimeout
+	s.Timeout.CurrentRetryCount = 0
 	s.updateLastActivity()
 	return nil
 }
@@ -415,4 +422,103 @@ func (s *Subscriber) recordDeliveryError() {
 	s.mu.Lock()
 	s.stats.lastErrorTimestamp = now
 	s.mu.Unlock()
+}
+
+// handleRetry increments the retry count and updates the timeout duration using backoff
+func (s *Subscriber) handleRetry() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Record retry attempt time
+	s.Timeout.LastRetryTime = time.Now()
+
+	// Increment retry count
+	s.Timeout.CurrentRetryCount++
+
+	// Check if we've reached max retries
+	if s.Timeout.CurrentRetryCount > s.Timeout.MaxRetries {
+		// Don't increase timeout further, we'll enter cooldown period
+		return
+	}
+
+	// Calculate new timeout with backoff, but don't exceed max timeout
+	newTimeout := time.Duration(float64(s.Timeout.CurrentTimeout) * s.Timeout.BackoffMultiplier)
+	if newTimeout > s.Timeout.MaxTimeout {
+		newTimeout = s.Timeout.MaxTimeout
+	}
+	s.Timeout.CurrentTimeout = newTimeout
+}
+
+// resetRetryCount resets retry count and timeout after successful delivery
+func (s *Subscriber) resetRetryCount() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Only reset if we've had retries or in cooldown
+	if s.Timeout.CurrentRetryCount > 0 {
+		s.Timeout.CurrentRetryCount = 0
+		s.Timeout.CurrentTimeout = s.Timeout.InitialTimeout
+	}
+}
+
+// IsInCooldown returns true if the subscriber is in cooldown period after max retries
+func (s *Subscriber) IsInCooldown() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// If we haven't reached max retries, we're not in cooldown
+	if s.Timeout.CurrentRetryCount < s.Timeout.MaxRetries {
+		return false
+	}
+
+	// Check if cooldown period has elapsed since last retry
+	cooldownEnds := s.Timeout.LastRetryTime.Add(s.Timeout.CooldownPeriod)
+	return time.Now().Before(cooldownEnds)
+}
+
+// ShouldRetry returns true if the subscriber should retry delivery
+func (s *Subscriber) ShouldRetry() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// Don't retry if max retries reached and still in cooldown
+	if s.Timeout.CurrentRetryCount >= s.Timeout.MaxRetries {
+		// Check if cooldown period has elapsed
+		cooldownEnds := s.Timeout.LastRetryTime.Add(s.Timeout.CooldownPeriod)
+		if time.Now().Before(cooldownEnds) {
+			// Still in cooldown
+			return false
+		}
+		// Cooldown period elapsed, can retry again
+		return true
+	}
+
+	// Can retry if we haven't reached max retries
+	return true
+}
+
+// GetRetryInfo returns current retry count, max retries, and current timeout
+func (s *Subscriber) GetRetryInfo() (current int, max int, timeout time.Duration) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.Timeout.CurrentRetryCount, s.Timeout.MaxRetries, s.Timeout.CurrentTimeout
+}
+
+// resetAfterCooldown resets retry count and timeout after cooldown period
+// Returns true if reset was performed
+func (s *Subscriber) resetAfterCooldown() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Check if we're in cooldown and cooldown period has elapsed
+	if s.Timeout.CurrentRetryCount >= s.Timeout.MaxRetries {
+		cooldownEnds := s.Timeout.LastRetryTime.Add(s.Timeout.CooldownPeriod)
+		if time.Now().After(cooldownEnds) {
+			// Cooldown period elapsed, reset
+			s.Timeout.CurrentRetryCount = 0
+			s.Timeout.CurrentTimeout = s.Timeout.InitialTimeout
+			return true
+		}
+	}
+	return false
 }

@@ -32,7 +32,7 @@
    - Create composite filters with AND/OR logic
    - Include regex pattern matching for event types
 
-- [ ] 5. Implement timeout configuration in subscriber model
+- [x] 5. Implement timeout configuration in subscriber model
    - Define TimeoutConfig struct with initial, maximum, and current timeout values
    - Include backoff multiplier for escalating timeouts
    - Add maximum retry count configuration

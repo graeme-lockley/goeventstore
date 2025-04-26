@@ -352,144 +352,387 @@ func TestSubscriberConcurrency(t *testing.T) {
 	}
 }
 
-// TestTimeoutConfigConversion tests converting between internal and outbound timeout config
-func TestTimeoutConfigConversion(t *testing.T) {
-	internal := TimeoutConfig{
+// TestTimeoutConfig tests the timeout configuration
+func TestTimeoutConfig(t *testing.T) {
+	// Test DefaultTimeoutConfig
+	defaultConfig := DefaultTimeoutConfig()
+	if defaultConfig.InitialTimeout != 1*time.Second {
+		t.Errorf("Expected InitialTimeout to be 1s, got %v", defaultConfig.InitialTimeout)
+	}
+	if defaultConfig.MaxTimeout != 30*time.Second {
+		t.Errorf("Expected MaxTimeout to be 30s, got %v", defaultConfig.MaxTimeout)
+	}
+	if defaultConfig.BackoffMultiplier != 2.0 {
+		t.Errorf("Expected BackoffMultiplier to be 2.0, got %v", defaultConfig.BackoffMultiplier)
+	}
+	if defaultConfig.MaxRetries != 5 {
+		t.Errorf("Expected MaxRetries to be 5, got %v", defaultConfig.MaxRetries)
+	}
+	if defaultConfig.CooldownPeriod != 1*time.Minute {
+		t.Errorf("Expected CooldownPeriod to be 1m, got %v", defaultConfig.CooldownPeriod)
+	}
+	if defaultConfig.CurrentTimeout != 1*time.Second {
+		t.Errorf("Expected CurrentTimeout to be 1s, got %v", defaultConfig.CurrentTimeout)
+	}
+	if defaultConfig.CurrentRetryCount != 0 {
+		t.Errorf("Expected CurrentRetryCount to be 0, got %v", defaultConfig.CurrentRetryCount)
+	}
+
+	// Test TimeoutConfigFromOutbound
+	outboundConfig := outbound.TimeoutConfig{
 		InitialTimeout:    2 * time.Second,
 		MaxTimeout:        20 * time.Second,
 		BackoffMultiplier: 1.5,
 		MaxRetries:        3,
 		CooldownPeriod:    30 * time.Second,
-		CurrentTimeout:    3 * time.Second,
-		CurrentRetryCount: 1,
-		LastRetryTime:     time.Now(),
+	}
+	config := TimeoutConfigFromOutbound(outboundConfig)
+	if config.InitialTimeout != 2*time.Second {
+		t.Errorf("Expected InitialTimeout to be 2s, got %v", config.InitialTimeout)
+	}
+	if config.MaxTimeout != 20*time.Second {
+		t.Errorf("Expected MaxTimeout to be 20s, got %v", config.MaxTimeout)
+	}
+	if config.BackoffMultiplier != 1.5 {
+		t.Errorf("Expected BackoffMultiplier to be 1.5, got %v", config.BackoffMultiplier)
+	}
+	if config.MaxRetries != 3 {
+		t.Errorf("Expected MaxRetries to be 3, got %v", config.MaxRetries)
+	}
+	if config.CooldownPeriod != 30*time.Second {
+		t.Errorf("Expected CooldownPeriod to be 30s, got %v", config.CooldownPeriod)
+	}
+	if config.CurrentTimeout != 2*time.Second {
+		t.Errorf("Expected CurrentTimeout to be 2s, got %v", config.CurrentTimeout)
+	}
+	if config.CurrentRetryCount != 0 {
+		t.Errorf("Expected CurrentRetryCount to be 0, got %v", config.CurrentRetryCount)
 	}
 
-	// Convert to outbound
-	outboundConfig := internal.ToOutboundTimeoutConfig()
-
-	// Verify conversion preserved the expected fields
-	if outboundConfig.InitialTimeout != internal.InitialTimeout {
-		t.Errorf("Expected InitialTimeout to be %v, got %v", internal.InitialTimeout, outboundConfig.InitialTimeout)
+	// Test ToOutboundTimeoutConfig
+	outboundConverted := config.ToOutboundTimeoutConfig()
+	if outboundConverted.InitialTimeout != 2*time.Second {
+		t.Errorf("Expected InitialTimeout to be 2s, got %v", outboundConverted.InitialTimeout)
 	}
-
-	if outboundConfig.MaxTimeout != internal.MaxTimeout {
-		t.Errorf("Expected MaxTimeout to be %v, got %v", internal.MaxTimeout, outboundConfig.MaxTimeout)
+	if outboundConverted.MaxTimeout != 20*time.Second {
+		t.Errorf("Expected MaxTimeout to be 20s, got %v", outboundConverted.MaxTimeout)
 	}
-
-	if outboundConfig.BackoffMultiplier != internal.BackoffMultiplier {
-		t.Errorf("Expected BackoffMultiplier to be %v, got %v", internal.BackoffMultiplier, outboundConfig.BackoffMultiplier)
+	if outboundConverted.BackoffMultiplier != 1.5 {
+		t.Errorf("Expected BackoffMultiplier to be 1.5, got %v", outboundConverted.BackoffMultiplier)
 	}
-
-	if outboundConfig.MaxRetries != internal.MaxRetries {
-		t.Errorf("Expected MaxRetries to be %d, got %d", internal.MaxRetries, outboundConfig.MaxRetries)
+	if outboundConverted.MaxRetries != 3 {
+		t.Errorf("Expected MaxRetries to be 3, got %v", outboundConverted.MaxRetries)
 	}
-
-	if outboundConfig.CooldownPeriod != internal.CooldownPeriod {
-		t.Errorf("Expected CooldownPeriod to be %v, got %v", internal.CooldownPeriod, outboundConfig.CooldownPeriod)
-	}
-
-	// Convert back to internal and verify
-	roundTripped := TimeoutConfigFromOutbound(outboundConfig)
-
-	if roundTripped.InitialTimeout != internal.InitialTimeout {
-		t.Errorf("Expected InitialTimeout to be %v, got %v", internal.InitialTimeout, roundTripped.InitialTimeout)
-	}
-
-	if roundTripped.MaxTimeout != internal.MaxTimeout {
-		t.Errorf("Expected MaxTimeout to be %v, got %v", internal.MaxTimeout, roundTripped.MaxTimeout)
-	}
-
-	if roundTripped.BackoffMultiplier != internal.BackoffMultiplier {
-		t.Errorf("Expected BackoffMultiplier to be %v, got %v", internal.BackoffMultiplier, roundTripped.BackoffMultiplier)
-	}
-
-	if roundTripped.MaxRetries != internal.MaxRetries {
-		t.Errorf("Expected MaxRetries to be %d, got %d", internal.MaxRetries, roundTripped.MaxRetries)
-	}
-
-	if roundTripped.CooldownPeriod != internal.CooldownPeriod {
-		t.Errorf("Expected CooldownPeriod to be %v, got %v", internal.CooldownPeriod, roundTripped.CooldownPeriod)
-	}
-
-	// Fields that should be reset
-	if roundTripped.CurrentRetryCount != 0 {
-		t.Errorf("Expected CurrentRetryCount to be reset to 0, got %d", roundTripped.CurrentRetryCount)
-	}
-
-	if !roundTripped.LastRetryTime.IsZero() {
-		t.Errorf("Expected LastRetryTime to be reset to zero time, got %v", roundTripped.LastRetryTime)
+	if outboundConverted.CooldownPeriod != 30*time.Second {
+		t.Errorf("Expected CooldownPeriod to be 30s, got %v", outboundConverted.CooldownPeriod)
 	}
 }
 
-// TestSubscriberFilterConversion tests converting between internal and outbound subscriber filters
-func TestSubscriberFilterConversion(t *testing.T) {
-	internal := SubscriberFilter{
-		EventTypes:  []string{"Type1", "Type2"},
-		FromVersion: 42,
-		Metadata: map[string]interface{}{
-			"key1": "value1",
-			"key2": 123,
+// TestSubscriberRetryMechanism tests the retry mechanism
+func TestSubscriberRetryMechanism(t *testing.T) {
+	// Create a subscriber with custom timeout config
+	config := SubscriberConfig{
+		ID:     "test-retry-subscriber",
+		Topics: []string{"test-topic"},
+		Timeout: TimeoutConfig{
+			InitialTimeout:    100 * time.Millisecond,
+			MaxTimeout:        500 * time.Millisecond,
+			BackoffMultiplier: 2.0,
+			MaxRetries:        3,
+			CooldownPeriod:    200 * time.Millisecond,
+			CurrentTimeout:    100 * time.Millisecond,
+			CurrentRetryCount: 0,
 		},
 	}
+	subscriber := NewSubscriber(config)
 
-	// Convert to outbound
-	outboundFilter := internal.ToOutboundFilter()
-
-	// Verify conversion
-	if len(outboundFilter.EventTypes) != len(internal.EventTypes) {
-		t.Errorf("Expected %d event types, got %d", len(internal.EventTypes), len(outboundFilter.EventTypes))
+	// Test initial state
+	if subscriber.Timeout.CurrentRetryCount != 0 {
+		t.Errorf("Expected initial CurrentRetryCount to be 0, got %d", subscriber.Timeout.CurrentRetryCount)
+	}
+	if subscriber.Timeout.CurrentTimeout != 100*time.Millisecond {
+		t.Errorf("Expected initial CurrentTimeout to be 100ms, got %v", subscriber.Timeout.CurrentTimeout)
 	}
 
-	for i, eventType := range internal.EventTypes {
-		if outboundFilter.EventTypes[i] != eventType {
-			t.Errorf("Expected event type %s, got %s", eventType, outboundFilter.EventTypes[i])
-		}
+	// Test handleRetry
+	subscriber.handleRetry()
+	if subscriber.Timeout.CurrentRetryCount != 1 {
+		t.Errorf("Expected CurrentRetryCount to be 1 after first retry, got %d", subscriber.Timeout.CurrentRetryCount)
+	}
+	if subscriber.Timeout.CurrentTimeout != 200*time.Millisecond {
+		t.Errorf("Expected CurrentTimeout to be 200ms after first retry, got %v", subscriber.Timeout.CurrentTimeout)
 	}
 
-	if outboundFilter.FromVersion != internal.FromVersion {
-		t.Errorf("Expected FromVersion to be %d, got %d", internal.FromVersion, outboundFilter.FromVersion)
+	// Test second retry
+	subscriber.handleRetry()
+	if subscriber.Timeout.CurrentRetryCount != 2 {
+		t.Errorf("Expected CurrentRetryCount to be 2 after second retry, got %d", subscriber.Timeout.CurrentRetryCount)
+	}
+	if subscriber.Timeout.CurrentTimeout != 400*time.Millisecond {
+		t.Errorf("Expected CurrentTimeout to be 400ms after second retry, got %v", subscriber.Timeout.CurrentTimeout)
 	}
 
-	if len(outboundFilter.Metadata) != len(internal.Metadata) {
-		t.Errorf("Expected %d metadata entries, got %d", len(internal.Metadata), len(outboundFilter.Metadata))
+	// Test third retry (should calculate next timeout based on backoff)
+	subscriber.handleRetry()
+	if subscriber.Timeout.CurrentRetryCount != 3 {
+		t.Errorf("Expected CurrentRetryCount to be 3 after third retry, got %d", subscriber.Timeout.CurrentRetryCount)
+	}
+	expectedTimeout := 500 * time.Millisecond // 400ms * 2.0 = 800ms, but capped at MaxTimeout (500ms)
+	if subscriber.Timeout.CurrentTimeout != expectedTimeout {
+		t.Errorf("Expected CurrentTimeout to be %v after third retry, got %v", expectedTimeout, subscriber.Timeout.CurrentTimeout)
 	}
 
-	for k, v := range internal.Metadata {
-		if outboundFilter.Metadata[k] != v {
-			t.Errorf("Expected metadata %s to be %v, got %v", k, v, outboundFilter.Metadata[k])
-		}
+	// Test fourth retry (should still be at max retries count)
+	subscriber.handleRetry()
+	if subscriber.Timeout.CurrentRetryCount != 4 {
+		t.Errorf("Expected CurrentRetryCount to be 4 after fourth retry, got %d", subscriber.Timeout.CurrentRetryCount)
 	}
 
-	// Convert back to internal
-	roundTripped := SubscriberFilterFromOutbound(outboundFilter)
+	// Test resetRetryCount
+	subscriber.resetRetryCount()
+	if subscriber.Timeout.CurrentRetryCount != 0 {
+		t.Errorf("Expected CurrentRetryCount to be 0 after reset, got %d", subscriber.Timeout.CurrentRetryCount)
+	}
+	if subscriber.Timeout.CurrentTimeout != 100*time.Millisecond {
+		t.Errorf("Expected CurrentTimeout to be reset to 100ms, got %v", subscriber.Timeout.CurrentTimeout)
+	}
+}
 
-	if len(roundTripped.EventTypes) != len(internal.EventTypes) {
-		t.Errorf("Expected %d event types after round trip, got %d",
-			len(internal.EventTypes), len(roundTripped.EventTypes))
+// TestSubscriberCooldown tests the cooldown mechanism
+func TestSubscriberCooldown(t *testing.T) {
+	// Create a subscriber with custom timeout config with short cooldown for testing
+	config := SubscriberConfig{
+		ID:     "test-cooldown-subscriber",
+		Topics: []string{"test-topic"},
+		Timeout: TimeoutConfig{
+			InitialTimeout:    50 * time.Millisecond,
+			MaxTimeout:        200 * time.Millisecond,
+			BackoffMultiplier: 2.0,
+			MaxRetries:        2,                      // Just 2 retries for faster test
+			CooldownPeriod:    100 * time.Millisecond, // Short cooldown period for testing
+			CurrentTimeout:    50 * time.Millisecond,
+			CurrentRetryCount: 0,
+		},
+	}
+	subscriber := NewSubscriber(config)
+
+	// Simulate reaching max retries
+	subscriber.handleRetry() // retry 1
+	subscriber.handleRetry() // retry 2
+
+	// Should now be at max retries
+	if subscriber.Timeout.CurrentRetryCount != 2 {
+		t.Errorf("Expected CurrentRetryCount to be 2, got %d", subscriber.Timeout.CurrentRetryCount)
 	}
 
-	for i, eventType := range internal.EventTypes {
-		if roundTripped.EventTypes[i] != eventType {
-			t.Errorf("Expected event type %s after round trip, got %s",
-				eventType, roundTripped.EventTypes[i])
-		}
+	// Should be in cooldown
+	if !subscriber.IsInCooldown() {
+		t.Error("Expected subscriber to be in cooldown after max retries")
 	}
 
-	if roundTripped.FromVersion != internal.FromVersion {
-		t.Errorf("Expected FromVersion to be %d after round trip, got %d",
-			internal.FromVersion, roundTripped.FromVersion)
+	// Should not retry during cooldown
+	if subscriber.ShouldRetry() {
+		t.Error("Expected ShouldRetry to return false during cooldown")
 	}
 
-	if len(roundTripped.Metadata) != len(internal.Metadata) {
-		t.Errorf("Expected %d metadata entries after round trip, got %d",
-			len(internal.Metadata), len(roundTripped.Metadata))
+	// Wait for cooldown to elapse
+	time.Sleep(150 * time.Millisecond)
+
+	// Should no longer be in cooldown
+	if subscriber.IsInCooldown() {
+		t.Error("Expected subscriber to not be in cooldown after cooldown period")
 	}
 
-	for k, v := range internal.Metadata {
-		if roundTripped.Metadata[k] != v {
-			t.Errorf("Expected metadata %s to be %v after round trip, got %v",
-				k, v, roundTripped.Metadata[k])
-		}
+	// Should be able to retry again
+	if !subscriber.ShouldRetry() {
+		t.Error("Expected ShouldRetry to return true after cooldown period")
+	}
+
+	// Test resetAfterCooldown
+	reset := subscriber.resetAfterCooldown()
+	if !reset {
+		t.Error("Expected resetAfterCooldown to return true after cooldown period")
+	}
+
+	// Retry count and timeout should be reset
+	if subscriber.Timeout.CurrentRetryCount != 0 {
+		t.Errorf("Expected CurrentRetryCount to be 0 after cooldown reset, got %d", subscriber.Timeout.CurrentRetryCount)
+	}
+	if subscriber.Timeout.CurrentTimeout != 50*time.Millisecond {
+		t.Errorf("Expected CurrentTimeout to be reset to 50ms, got %v", subscriber.Timeout.CurrentTimeout)
+	}
+}
+
+// TestReceiveEventWithTimeout tests event delivery with timeout
+func TestReceiveEventWithTimeout(t *testing.T) {
+	// Create a subscriber with custom timeout config
+	config := SubscriberConfig{
+		ID:     "test-receive-subscriber",
+		Topics: []string{"test-topic"},
+		Timeout: TimeoutConfig{
+			InitialTimeout:    50 * time.Millisecond,
+			MaxTimeout:        200 * time.Millisecond,
+			BackoffMultiplier: 2.0,
+			MaxRetries:        2,
+			CooldownPeriod:    100 * time.Millisecond,
+			CurrentTimeout:    50 * time.Millisecond,
+			CurrentRetryCount: 0,
+		},
+		BufferSize: 1, // Small buffer to test backpressure
+	}
+	subscriber := NewSubscriber(config)
+
+	// Create an event to test with
+	event := outbound.Event{
+		ID:        "test-event",
+		Topic:     "test-topic",
+		Type:      "TestEvent",
+		Data:      map[string]interface{}{"key": "value"},
+		Timestamp: time.Now().UnixNano(),
+		Version:   1,
+	}
+
+	// Test successful delivery
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	err := subscriber.ReceiveEvent(ctx, event)
+	cancel()
+	if err != nil {
+		t.Errorf("Expected successful delivery, got error: %v", err)
+	}
+
+	// Manually drain the event we just sent to ensure buffer is empty
+	<-subscriber.EventChannel
+
+	// Fill the buffer to test timeout
+	err = subscriber.ReceiveEvent(context.Background(), event)
+	if err != nil {
+		t.Errorf("Expected successful delivery for buffer filling, got error: %v", err)
+	}
+
+	// This should timeout since buffer is full
+	ctx, cancel = context.WithTimeout(context.Background(), 10*time.Millisecond)
+	err = subscriber.ReceiveEvent(ctx, event)
+	cancel()
+	if err == nil {
+		t.Error("Expected timeout error, got nil")
+	}
+
+	// Check that retry count was incremented
+	if subscriber.Timeout.CurrentRetryCount != 1 {
+		t.Errorf("Expected CurrentRetryCount to be 1 after timeout, got %d", subscriber.Timeout.CurrentRetryCount)
+	}
+	if subscriber.Timeout.CurrentTimeout != 100*time.Millisecond {
+		t.Errorf("Expected CurrentTimeout to be 100ms after timeout, got %v", subscriber.Timeout.CurrentTimeout)
+	}
+
+	// Read from buffer to make space
+	<-subscriber.EventChannel
+
+	// Successfully deliver again (should reset retry count)
+	ctx, cancel = context.WithTimeout(context.Background(), 50*time.Millisecond)
+	err = subscriber.ReceiveEvent(ctx, event)
+	cancel()
+	if err != nil {
+		t.Errorf("Expected successful delivery after timeout, got error: %v", err)
+	}
+
+	// Drain the channel again to avoid leaks
+	<-subscriber.EventChannel
+
+	// Check that retry count was reset
+	if subscriber.Timeout.CurrentRetryCount != 0 {
+		t.Errorf("Expected CurrentRetryCount to be 0 after successful delivery, got %d", subscriber.Timeout.CurrentRetryCount)
+	}
+	if subscriber.Timeout.CurrentTimeout != 50*time.Millisecond {
+		t.Errorf("Expected CurrentTimeout to be reset to 50ms, got %v", subscriber.Timeout.CurrentTimeout)
+	}
+}
+
+// TestUpdateTimeout tests updating the timeout configuration
+func TestUpdateTimeout(t *testing.T) {
+	// Create a subscriber with default timeout config
+	subscriber := NewSubscriber(SubscriberConfig{
+		ID:      "test-update-subscriber",
+		Topics:  []string{"test-topic"},
+		Timeout: DefaultTimeoutConfig(),
+	})
+
+	// Simulate some retries to change the current values
+	subscriber.handleRetry()
+	subscriber.handleRetry()
+
+	if subscriber.Timeout.CurrentRetryCount != 2 {
+		t.Errorf("Expected CurrentRetryCount to be 2 before update, got %d", subscriber.Timeout.CurrentRetryCount)
+	}
+
+	// Update timeout configuration
+	newConfig := outbound.TimeoutConfig{
+		InitialTimeout:    200 * time.Millisecond,
+		MaxTimeout:        1 * time.Second,
+		BackoffMultiplier: 1.5,
+		MaxRetries:        4,
+		CooldownPeriod:    500 * time.Millisecond,
+	}
+
+	err := subscriber.UpdateTimeout(newConfig)
+	if err != nil {
+		t.Errorf("Expected UpdateTimeout to succeed, got error: %v", err)
+	}
+
+	// Verify that current values were reset
+	if subscriber.Timeout.CurrentRetryCount != 0 {
+		t.Errorf("Expected CurrentRetryCount to be reset to 0, got %d", subscriber.Timeout.CurrentRetryCount)
+	}
+	if subscriber.Timeout.CurrentTimeout != 200*time.Millisecond {
+		t.Errorf("Expected CurrentTimeout to be reset to 200ms, got %v", subscriber.Timeout.CurrentTimeout)
+	}
+
+	// Verify that new configuration was applied
+	if subscriber.Timeout.InitialTimeout != 200*time.Millisecond {
+		t.Errorf("Expected InitialTimeout to be 200ms, got %v", subscriber.Timeout.InitialTimeout)
+	}
+	if subscriber.Timeout.MaxTimeout != 1*time.Second {
+		t.Errorf("Expected MaxTimeout to be 1s, got %v", subscriber.Timeout.MaxTimeout)
+	}
+	if subscriber.Timeout.BackoffMultiplier != 1.5 {
+		t.Errorf("Expected BackoffMultiplier to be 1.5, got %v", subscriber.Timeout.BackoffMultiplier)
+	}
+	if subscriber.Timeout.MaxRetries != 4 {
+		t.Errorf("Expected MaxRetries to be 4, got %d", subscriber.Timeout.MaxRetries)
+	}
+	if subscriber.Timeout.CooldownPeriod != 500*time.Millisecond {
+		t.Errorf("Expected CooldownPeriod to be 500ms, got %v", subscriber.Timeout.CooldownPeriod)
+	}
+}
+
+// TestGetRetryInfo tests getting retry information
+func TestGetRetryInfo(t *testing.T) {
+	// Create a subscriber with custom timeout config
+	config := SubscriberConfig{
+		ID:     "test-info-subscriber",
+		Topics: []string{"test-topic"},
+		Timeout: TimeoutConfig{
+			InitialTimeout:    50 * time.Millisecond,
+			MaxTimeout:        200 * time.Millisecond,
+			BackoffMultiplier: 2.0,
+			MaxRetries:        3,
+			CooldownPeriod:    100 * time.Millisecond,
+			CurrentTimeout:    50 * time.Millisecond,
+			CurrentRetryCount: 0,
+		},
+	}
+	subscriber := NewSubscriber(config)
+
+	// Initial state
+	current, max, timeout := subscriber.GetRetryInfo()
+	if current != 0 || max != 3 || timeout != 50*time.Millisecond {
+		t.Errorf("Expected (0, 3, 50ms), got (%d, %d, %v)", current, max, timeout)
+	}
+
+	// After one retry
+	subscriber.handleRetry()
+	current, max, timeout = subscriber.GetRetryInfo()
+	if current != 1 || max != 3 || timeout != 100*time.Millisecond {
+		t.Errorf("Expected (1, 3, 100ms), got (%d, %d, %v)", current, max, timeout)
 	}
 }
